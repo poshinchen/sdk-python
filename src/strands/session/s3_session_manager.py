@@ -2,22 +2,27 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 import boto3
 from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import ClientError
 
+from .. import _identifier
 from ..types.exceptions import SessionException
 from ..types.session import Session, SessionAgent, SessionMessage
 from .repository_session_manager import RepositorySessionManager
 from .session_repository import SessionRepository
+
+if TYPE_CHECKING:
+    from ..multiagent.base import MultiAgentBase
 
 logger = logging.getLogger(__name__)
 
 SESSION_PREFIX = "session_"
 AGENT_PREFIX = "agent_"
 MESSAGE_PREFIX = "message_"
+MULTI_AGENT_PREFIX = "multi_agent_"
 
 
 class S3SessionManager(RepositorySessionManager, SessionRepository):
@@ -51,6 +56,7 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
 
         Args:
             session_id: ID for the session
+                ID is not allowed to contain path separators (e.g., a/b).
             bucket: S3 bucket name (required)
             prefix: S3 key prefix for storage organization
             boto_session: Optional boto3 session
@@ -79,12 +85,29 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
         super().__init__(session_id=session_id, session_repository=self)
 
     def _get_session_path(self, session_id: str) -> str:
-        """Get session S3 prefix."""
+        """Get session S3 prefix.
+
+        Args:
+            session_id: ID for the session.
+
+        Raises:
+            ValueError: If session id contains a path separator.
+        """
+        session_id = _identifier.validate(session_id, _identifier.Identifier.SESSION)
         return f"{self.prefix}/{SESSION_PREFIX}{session_id}/"
 
     def _get_agent_path(self, session_id: str, agent_id: str) -> str:
-        """Get agent S3 prefix."""
+        """Get agent S3 prefix.
+
+        Args:
+            session_id: ID for the session.
+            agent_id: ID for the agent.
+
+        Raises:
+            ValueError: If session id or agent id contains a path separator.
+        """
         session_path = self._get_session_path(session_id)
+        agent_id = _identifier.validate(agent_id, _identifier.Identifier.AGENT)
         return f"{session_path}agents/{AGENT_PREFIX}{agent_id}/"
 
     def _get_message_path(self, session_id: str, agent_id: str, message_id: int) -> str:
@@ -94,11 +117,16 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
             session_id: ID of the session
             agent_id: ID of the agent
             message_id: Index of the message
-            **kwargs: Additional keyword arguments for future extensibility.
 
         Returns:
             The key for the message
+
+        Raises:
+            ValueError: If message_id is not an integer.
         """
+        if not isinstance(message_id, int):
+            raise ValueError(f"message_id=<{message_id}> | message id must be an integer")
+
         agent_path = self._get_agent_path(session_id, agent_id)
         return f"{agent_path}messages/{MESSAGE_PREFIX}{message_id}.json"
 
@@ -270,3 +298,31 @@ class S3SessionManager(RepositorySessionManager, SessionRepository):
 
         except ClientError as e:
             raise SessionException(f"S3 error reading messages: {e}") from e
+
+    def _get_multi_agent_path(self, session_id: str, multi_agent_id: str) -> str:
+        """Get multi-agent S3 prefix."""
+        session_path = self._get_session_path(session_id)
+        multi_agent_id = _identifier.validate(multi_agent_id, _identifier.Identifier.AGENT)
+        return f"{session_path}multi_agents/{MULTI_AGENT_PREFIX}{multi_agent_id}/"
+
+    def create_multi_agent(self, session_id: str, multi_agent: "MultiAgentBase", **kwargs: Any) -> None:
+        """Create a new multiagent state in S3."""
+        multi_agent_id = multi_agent.id
+        multi_agent_key = f"{self._get_multi_agent_path(session_id, multi_agent_id)}multi_agent.json"
+        session_data = multi_agent.serialize_state()
+        self._write_s3_object(multi_agent_key, session_data)
+
+    def read_multi_agent(self, session_id: str, multi_agent_id: str, **kwargs: Any) -> Optional[dict[str, Any]]:
+        """Read multi-agent state from S3."""
+        multi_agent_key = f"{self._get_multi_agent_path(session_id, multi_agent_id)}multi_agent.json"
+        return self._read_s3_object(multi_agent_key)
+
+    def update_multi_agent(self, session_id: str, multi_agent: "MultiAgentBase", **kwargs: Any) -> None:
+        """Update multi-agent state in S3."""
+        multi_agent_state = multi_agent.serialize_state()
+        previous_multi_agent_state = self.read_multi_agent(session_id=session_id, multi_agent_id=multi_agent.id)
+        if previous_multi_agent_state is None:
+            raise SessionException(f"MultiAgent state {multi_agent.id} in session {session_id} does not exist")
+
+        multi_agent_key = f"{self._get_multi_agent_path(session_id, multi_agent.id)}multi_agent.json"
+        self._write_s3_object(multi_agent_key, multi_agent_state)

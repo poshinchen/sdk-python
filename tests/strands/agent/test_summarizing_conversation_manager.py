@@ -19,6 +19,8 @@ class MockAgent:
         self.messages = []
         self.model = Mock()
         self.call_tracker = Mock()
+        self.tool_registry = Mock()
+        self.tool_names = []
 
     def __call__(self, prompt):
         """Mock agent call that returns a summary."""
@@ -99,7 +101,7 @@ def test_reduce_context_with_summarization(summarizing_manager, mock_agent):
     assert len(mock_agent.messages) == 4
 
     # First message should be the summary
-    assert mock_agent.messages[0]["role"] == "assistant"
+    assert mock_agent.messages[0]["role"] == "user"
     first_content = mock_agent.messages[0]["content"][0]
     assert "text" in first_content and "This is a summary of the conversation." in first_content["text"]
 
@@ -438,7 +440,7 @@ def test_reduce_context_tool_pair_adjustment_works_with_forward_search():
     assert len(mock_agent.messages) == 2
 
     # First message should be the summary
-    assert mock_agent.messages[0]["role"] == "assistant"
+    assert mock_agent.messages[0]["role"] == "user"
     summary_content = mock_agent.messages[0]["content"][0]
     assert "text" in summary_content and "This is a summary of the conversation." in summary_content["text"]
 
@@ -608,3 +610,30 @@ def test_summarizing_conversation_manager_properly_records_removed_message_count
     # so we dont count this toward the total:
     # 4 (Previously removed messages) + 2 (removed messages) - 1 (Previous summary message) = 5
     assert manager.removed_message_count == 5
+
+
+@patch("strands.agent.conversation_manager.summarizing_conversation_manager.ToolRegistry")
+def test_summarizing_conversation_manager_generate_summary_with_noop_tool(mock_registry_cls, summarizing_manager):
+    mock_registry = mock_registry_cls.return_value
+
+    messages = [{"role": "user", "content": [{"text": "test"}]}]
+    agent = create_mock_agent()
+
+    original_tool_registry = agent.tool_registry
+    summarizing_manager._generate_summary(messages, agent)
+
+    assert original_tool_registry == agent.tool_registry
+    mock_registry.register_tool.assert_called_once()
+
+
+@patch("strands.agent.conversation_manager.summarizing_conversation_manager.ToolRegistry")
+def test_summarizing_conversation_manager_generate_summary_with_tools(mock_registry_cls, summarizing_manager):
+    mock_registry = mock_registry_cls.return_value
+
+    messages = [{"role": "user", "content": [{"text": "test"}]}]
+    agent = create_mock_agent()
+    agent.tool_names = ["test_tool"]
+
+    summarizing_manager._generate_summary(messages, agent)
+
+    mock_registry.register_tool.assert_not_called()

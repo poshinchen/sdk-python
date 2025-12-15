@@ -5,16 +5,14 @@ from pydantic import BaseModel
 
 import strands
 from strands import Agent
-from strands.experimental.hooks import (
-    AfterModelInvocationEvent,
-    AfterToolInvocationEvent,
-    BeforeModelInvocationEvent,
-    BeforeToolInvocationEvent,
-)
 from strands.hooks import (
     AfterInvocationEvent,
+    AfterModelCallEvent,
+    AfterToolCallEvent,
     AgentInitializedEvent,
     BeforeInvocationEvent,
+    BeforeModelCallEvent,
+    BeforeToolCallEvent,
     MessageAddedEvent,
 )
 from strands.types.content import Messages
@@ -30,10 +28,10 @@ def hook_provider():
             AgentInitializedEvent,
             BeforeInvocationEvent,
             AfterInvocationEvent,
-            AfterToolInvocationEvent,
-            BeforeToolInvocationEvent,
-            BeforeModelInvocationEvent,
-            AfterModelInvocationEvent,
+            AfterToolCallEvent,
+            BeforeToolCallEvent,
+            BeforeModelCallEvent,
+            AfterModelCallEvent,
             MessageAddedEvent,
         ]
     )
@@ -125,10 +123,13 @@ def test_agent_tool_call(agent, hook_provider, agent_tool):
 
     assert length == 6
 
-    assert next(events) == BeforeToolInvocationEvent(
-        agent=agent, selected_tool=agent_tool, tool_use=tool_use, invocation_state=ANY
+    assert next(events) == BeforeToolCallEvent(
+        agent=agent,
+        selected_tool=agent_tool,
+        tool_use=tool_use,
+        invocation_state=ANY,
     )
-    assert next(events) == AfterToolInvocationEvent(
+    assert next(events) == AfterToolCallEvent(
         agent=agent,
         selected_tool=agent_tool,
         tool_use=tool_use,
@@ -146,7 +147,7 @@ def test_agent_tool_call(agent, hook_provider, agent_tool):
 def test_agent__call__hooks(agent, hook_provider, agent_tool, mock_model, tool_use):
     """Verify that the correct hook events are emitted as part of __call__."""
 
-    agent("test message")
+    result = agent("test message")
 
     length, events = hook_provider.get_events()
 
@@ -157,10 +158,10 @@ def test_agent__call__hooks(agent, hook_provider, agent_tool, mock_model, tool_u
         agent=agent,
         message=agent.messages[0],
     )
-    assert next(events) == BeforeModelInvocationEvent(agent=agent)
-    assert next(events) == AfterModelInvocationEvent(
+    assert next(events) == BeforeModelCallEvent(agent=agent)
+    assert next(events) == AfterModelCallEvent(
         agent=agent,
-        stop_response=AfterModelInvocationEvent.ModelStopResponse(
+        stop_response=AfterModelCallEvent.ModelStopResponse(
             message={
                 "content": [{"toolUse": tool_use}],
                 "role": "assistant",
@@ -171,10 +172,13 @@ def test_agent__call__hooks(agent, hook_provider, agent_tool, mock_model, tool_u
     )
 
     assert next(events) == MessageAddedEvent(agent=agent, message=agent.messages[1])
-    assert next(events) == BeforeToolInvocationEvent(
-        agent=agent, selected_tool=agent_tool, tool_use=tool_use, invocation_state=ANY
+    assert next(events) == BeforeToolCallEvent(
+        agent=agent,
+        selected_tool=agent_tool,
+        tool_use=tool_use,
+        invocation_state=ANY,
     )
-    assert next(events) == AfterToolInvocationEvent(
+    assert next(events) == AfterToolCallEvent(
         agent=agent,
         selected_tool=agent_tool,
         tool_use=tool_use,
@@ -182,10 +186,10 @@ def test_agent__call__hooks(agent, hook_provider, agent_tool, mock_model, tool_u
         result={"content": [{"text": "!loot a dekovni I"}], "status": "success", "toolUseId": "123"},
     )
     assert next(events) == MessageAddedEvent(agent=agent, message=agent.messages[2])
-    assert next(events) == BeforeModelInvocationEvent(agent=agent)
-    assert next(events) == AfterModelInvocationEvent(
+    assert next(events) == BeforeModelCallEvent(agent=agent)
+    assert next(events) == AfterModelCallEvent(
         agent=agent,
-        stop_response=AfterModelInvocationEvent.ModelStopResponse(
+        stop_response=AfterModelCallEvent.ModelStopResponse(
             message=mock_model.agent_responses[1],
             stop_reason="end_turn",
         ),
@@ -193,7 +197,7 @@ def test_agent__call__hooks(agent, hook_provider, agent_tool, mock_model, tool_u
     )
     assert next(events) == MessageAddedEvent(agent=agent, message=agent.messages[3])
 
-    assert next(events) == AfterInvocationEvent(agent=agent)
+    assert next(events) == AfterInvocationEvent(agent=agent, result=result)
 
     assert len(agent.messages) == 4
 
@@ -206,8 +210,10 @@ async def test_agent_stream_async_hooks(agent, hook_provider, agent_tool, mock_m
     assert hook_provider.events_received == [BeforeInvocationEvent(agent=agent)]
 
     # iterate the rest
-    async for _ in iterator:
-        pass
+    result = None
+    async for item in iterator:
+        if "result" in item:
+            result = item["result"]
 
     length, events = hook_provider.get_events()
 
@@ -218,10 +224,10 @@ async def test_agent_stream_async_hooks(agent, hook_provider, agent_tool, mock_m
         agent=agent,
         message=agent.messages[0],
     )
-    assert next(events) == BeforeModelInvocationEvent(agent=agent)
-    assert next(events) == AfterModelInvocationEvent(
+    assert next(events) == BeforeModelCallEvent(agent=agent)
+    assert next(events) == AfterModelCallEvent(
         agent=agent,
-        stop_response=AfterModelInvocationEvent.ModelStopResponse(
+        stop_response=AfterModelCallEvent.ModelStopResponse(
             message={
                 "content": [{"toolUse": tool_use}],
                 "role": "assistant",
@@ -232,10 +238,13 @@ async def test_agent_stream_async_hooks(agent, hook_provider, agent_tool, mock_m
     )
 
     assert next(events) == MessageAddedEvent(agent=agent, message=agent.messages[1])
-    assert next(events) == BeforeToolInvocationEvent(
-        agent=agent, selected_tool=agent_tool, tool_use=tool_use, invocation_state=ANY
+    assert next(events) == BeforeToolCallEvent(
+        agent=agent,
+        selected_tool=agent_tool,
+        tool_use=tool_use,
+        invocation_state=ANY,
     )
-    assert next(events) == AfterToolInvocationEvent(
+    assert next(events) == AfterToolCallEvent(
         agent=agent,
         selected_tool=agent_tool,
         tool_use=tool_use,
@@ -243,10 +252,10 @@ async def test_agent_stream_async_hooks(agent, hook_provider, agent_tool, mock_m
         result={"content": [{"text": "!loot a dekovni I"}], "status": "success", "toolUseId": "123"},
     )
     assert next(events) == MessageAddedEvent(agent=agent, message=agent.messages[2])
-    assert next(events) == BeforeModelInvocationEvent(agent=agent)
-    assert next(events) == AfterModelInvocationEvent(
+    assert next(events) == BeforeModelCallEvent(agent=agent)
+    assert next(events) == AfterModelCallEvent(
         agent=agent,
-        stop_response=AfterModelInvocationEvent.ModelStopResponse(
+        stop_response=AfterModelCallEvent.ModelStopResponse(
             message=mock_model.agent_responses[1],
             stop_reason="end_turn",
         ),
@@ -254,7 +263,7 @@ async def test_agent_stream_async_hooks(agent, hook_provider, agent_tool, mock_m
     )
     assert next(events) == MessageAddedEvent(agent=agent, message=agent.messages[3])
 
-    assert next(events) == AfterInvocationEvent(agent=agent)
+    assert next(events) == AfterInvocationEvent(agent=agent, result=result)
 
     assert len(agent.messages) == 4
 

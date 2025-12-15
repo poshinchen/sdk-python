@@ -1,6 +1,7 @@
 """Tests for S3SessionManager."""
 
 import json
+from unittest.mock import Mock
 
 import boto3
 import pytest
@@ -251,7 +252,7 @@ def test_read_nonexistent_message(s3_manager, sample_session, sample_agent, samp
     s3_manager.create_agent(sample_session.session_id, sample_agent)
 
     # Read message
-    result = s3_manager.read_message(sample_session.session_id, sample_agent.agent_id, "nonexistent_message")
+    result = s3_manager.read_message(sample_session.session_id, sample_agent.agent_id, 999)
 
     assert result is None
 
@@ -332,3 +333,117 @@ def test_update_nonexistent_message(s3_manager, sample_session, sample_agent, sa
     # Update message
     with pytest.raises(SessionException):
         s3_manager.update_message(sample_session.session_id, sample_agent.agent_id, sample_message)
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        "a/../b",
+        "a/b",
+    ],
+)
+def test__get_session_path_invalid_session_id(session_id, s3_manager):
+    with pytest.raises(ValueError, match=f"session_id={session_id} | id cannot contain path separators"):
+        s3_manager._get_session_path(session_id)
+
+
+@pytest.mark.parametrize(
+    "agent_id",
+    [
+        "a/../b",
+        "a/b",
+    ],
+)
+def test__get_agent_path_invalid_agent_id(agent_id, s3_manager):
+    with pytest.raises(ValueError, match=f"agent_id={agent_id} | id cannot contain path separators"):
+        s3_manager._get_agent_path("session1", agent_id)
+
+
+@pytest.mark.parametrize(
+    "message_id",
+    [
+        "../../../secret",
+        "../../attack",
+        "../escape",
+        "path/traversal",
+        "not_an_int",
+        None,
+        [],
+    ],
+)
+def test__get_message_path_invalid_message_id(message_id, s3_manager):
+    """Test that message_id that is not an integer raises ValueError."""
+    with pytest.raises(ValueError, match=r"message_id=<.*> \| message id must be an integer"):
+        s3_manager._get_message_path("session1", "agent1", message_id)
+
+
+@pytest.fixture
+def mock_multi_agent():
+    """Create mock multi-agent for testing."""
+
+    mock = Mock()
+    mock.id = "test-multi-agent"
+    mock.state = {"key": "value"}
+    mock.serialize_state.return_value = {"id": "test-multi-agent", "state": {"key": "value"}}
+    return mock
+
+
+def test_create_multi_agent(s3_manager, sample_session, mock_multi_agent):
+    """Test creating multi-agent state in S3."""
+    s3_manager.create_session(sample_session)
+    s3_manager.create_multi_agent(sample_session.session_id, mock_multi_agent)
+
+    # Verify S3 object created
+    key = f"{s3_manager._get_multi_agent_path(sample_session.session_id, mock_multi_agent.id)}multi_agent.json"
+    response = s3_manager.client.get_object(Bucket=s3_manager.bucket, Key=key)
+    data = json.loads(response["Body"].read().decode("utf-8"))
+
+    assert data["id"] == mock_multi_agent.id
+    assert data["state"] == mock_multi_agent.state
+
+
+def test_read_multi_agent(s3_manager, sample_session, mock_multi_agent):
+    """Test reading multi-agent state from S3."""
+    # Create session and multi-agent
+    s3_manager.create_session(sample_session)
+    s3_manager.create_multi_agent(sample_session.session_id, mock_multi_agent)
+
+    # Read multi-agent
+    result = s3_manager.read_multi_agent(sample_session.session_id, mock_multi_agent.id)
+
+    assert result["id"] == mock_multi_agent.id
+    assert result["state"] == mock_multi_agent.state
+
+
+def test_read_nonexistent_multi_agent(s3_manager, sample_session):
+    """Test reading multi-agent state that doesn't exist."""
+    s3_manager.create_session(sample_session)
+    result = s3_manager.read_multi_agent(sample_session.session_id, "nonexistent")
+    assert result is None
+
+
+def test_update_multi_agent(s3_manager, sample_session, mock_multi_agent):
+    """Test updating multi-agent state in S3."""
+    # Create session and multi-agent
+    s3_manager.create_session(sample_session)
+    s3_manager.create_multi_agent(sample_session.session_id, mock_multi_agent)
+
+    updated_mock = Mock()
+    updated_mock.id = mock_multi_agent.id
+    updated_mock.serialize_state.return_value = {"id": mock_multi_agent.id, "state": {"updated": "value"}}
+    s3_manager.update_multi_agent(sample_session.session_id, updated_mock)
+
+    # Verify update
+    result = s3_manager.read_multi_agent(sample_session.session_id, mock_multi_agent.id)
+    assert result["state"] == {"updated": "value"}
+
+
+def test_update_nonexistent_multi_agent(s3_manager, sample_session):
+    """Test updating multi-agent state that doesn't exist."""
+    # Create session
+    s3_manager.create_session(sample_session)
+
+    nonexistent_mock = Mock()
+    nonexistent_mock.id = "nonexistent"
+    with pytest.raises(SessionException):
+        s3_manager.update_multi_agent(sample_session.session_id, nonexistent_mock)

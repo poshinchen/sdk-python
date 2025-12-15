@@ -1,5 +1,6 @@
 import os
 import sys
+import traceback
 import unittest.mock
 from unittest.mock import ANY
 
@@ -10,10 +11,18 @@ from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import ClientError, EventStreamError
 
 import strands
+from strands import _exception_notes
 from strands.models import BedrockModel
-from strands.models.bedrock import DEFAULT_BEDROCK_MODEL_ID, DEFAULT_BEDROCK_REGION
+from strands.models.bedrock import (
+    _DEFAULT_BEDROCK_MODEL_ID,
+    DEFAULT_BEDROCK_MODEL_ID,
+    DEFAULT_BEDROCK_REGION,
+    DEFAULT_READ_TIMEOUT,
+)
 from strands.types.exceptions import ModelThrottledException
 from strands.types.tools import ToolSpec
+
+FORMATTED_DEFAULT_MODEL_ID = DEFAULT_BEDROCK_MODEL_ID.format("us")
 
 
 @pytest.fixture
@@ -119,7 +128,7 @@ def test__init__default_model_id(bedrock_client):
     model = BedrockModel()
 
     tru_model_id = model.get_config().get("model_id")
-    exp_model_id = DEFAULT_BEDROCK_MODEL_ID
+    exp_model_id = FORMATTED_DEFAULT_MODEL_ID
 
     assert tru_model_id == exp_model_id
 
@@ -129,7 +138,7 @@ def test__init__with_default_region(session_cls, mock_client_method):
     with unittest.mock.patch.object(os, "environ", {}):
         BedrockModel()
         session_cls.return_value.client.assert_called_with(
-            region_name=DEFAULT_BEDROCK_REGION, config=ANY, service_name=ANY
+            region_name=DEFAULT_BEDROCK_REGION, config=ANY, service_name=ANY, endpoint_url=None
         )
 
 
@@ -139,14 +148,14 @@ def test__init__with_session_region(session_cls, mock_client_method):
 
     BedrockModel()
 
-    mock_client_method.assert_called_with(region_name="eu-blah-1", config=ANY, service_name=ANY)
+    mock_client_method.assert_called_with(region_name="eu-blah-1", config=ANY, service_name=ANY, endpoint_url=None)
 
 
 def test__init__with_custom_region(mock_client_method):
     """Test that BedrockModel uses the provided region."""
     custom_region = "us-east-1"
     BedrockModel(region_name=custom_region)
-    mock_client_method.assert_called_with(region_name=custom_region, config=ANY, service_name=ANY)
+    mock_client_method.assert_called_with(region_name=custom_region, config=ANY, service_name=ANY, endpoint_url=None)
 
 
 def test__init__with_default_environment_variable_region(mock_client_method):
@@ -154,7 +163,7 @@ def test__init__with_default_environment_variable_region(mock_client_method):
     with unittest.mock.patch.object(os, "environ", {"AWS_REGION": "eu-west-2"}):
         BedrockModel()
 
-    mock_client_method.assert_called_with(region_name="eu-west-2", config=ANY, service_name=ANY)
+    mock_client_method.assert_called_with(region_name="eu-west-2", config=ANY, service_name=ANY, endpoint_url=None)
 
 
 def test__init__region_precedence(mock_client_method, session_cls):
@@ -164,21 +173,38 @@ def test__init__region_precedence(mock_client_method, session_cls):
 
         # specifying a region always wins out
         BedrockModel(region_name="us-specified-1")
-        mock_client_method.assert_called_with(region_name="us-specified-1", config=ANY, service_name=ANY)
+        mock_client_method.assert_called_with(
+            region_name="us-specified-1", config=ANY, service_name=ANY, endpoint_url=None
+        )
 
         # other-wise uses the session's
         BedrockModel()
-        mock_client_method.assert_called_with(region_name="us-session-1", config=ANY, service_name=ANY)
+        mock_client_method.assert_called_with(
+            region_name="us-session-1", config=ANY, service_name=ANY, endpoint_url=None
+        )
 
         # environment variable next
         session_cls.return_value.region_name = None
         BedrockModel()
-        mock_client_method.assert_called_with(region_name="us-environment-1", config=ANY, service_name=ANY)
+        mock_client_method.assert_called_with(
+            region_name="us-environment-1", config=ANY, service_name=ANY, endpoint_url=None
+        )
 
         mock_os_environ.pop("AWS_REGION")
         session_cls.return_value.region_name = None  # No session region
         BedrockModel()
-        mock_client_method.assert_called_with(region_name=DEFAULT_BEDROCK_REGION, config=ANY, service_name=ANY)
+        mock_client_method.assert_called_with(
+            region_name=DEFAULT_BEDROCK_REGION, config=ANY, service_name=ANY, endpoint_url=None
+        )
+
+
+def test__init__with_endpoint_url(mock_client_method):
+    """Test that BedrockModel uses the provided endpoint_url for VPC endpoints."""
+    custom_endpoint = "https://vpce-12345-abcde.bedrock-runtime.us-west-2.vpce.amazonaws.com"
+    BedrockModel(endpoint_url=custom_endpoint)
+    mock_client_method.assert_called_with(
+        region_name=DEFAULT_BEDROCK_REGION, config=ANY, service_name=ANY, endpoint_url=custom_endpoint
+    )
 
 
 def test__init__with_region_and_session_raises_value_error():
@@ -199,6 +225,20 @@ def test__init__default_user_agent(bedrock_client):
         assert kwargs["service_name"] == "bedrock-runtime"
         assert isinstance(kwargs["config"], BotocoreConfig)
         assert kwargs["config"].user_agent_extra == "strands-agents"
+        assert kwargs["config"].read_timeout == DEFAULT_READ_TIMEOUT
+
+
+def test__init__default_read_timeout(bedrock_client):
+    """Set default read timeout when no boto_client_config is provided."""
+    with unittest.mock.patch("strands.models.bedrock.boto3.Session") as mock_session_cls:
+        mock_session = mock_session_cls.return_value
+        _ = BedrockModel()
+
+        # Verify the client was created with the correct read timeout
+        mock_session.client.assert_called_once()
+        args, kwargs = mock_session.client.call_args
+        assert isinstance(kwargs["config"], BotocoreConfig)
+        assert kwargs["config"].read_timeout == DEFAULT_READ_TIMEOUT
 
 
 def test__init__with_custom_boto_client_config_no_user_agent(bedrock_client):
@@ -256,7 +296,7 @@ def test_update_config(model, model_id):
 
 
 def test_format_request_default(model, messages, model_id):
-    tru_request = model.format_request(messages)
+    tru_request = model._format_request(messages)
     exp_request = {
         "inferenceConfig": {},
         "modelId": model_id,
@@ -269,7 +309,7 @@ def test_format_request_default(model, messages, model_id):
 
 def test_format_request_additional_request_fields(model, messages, model_id, additional_request_fields):
     model.update_config(additional_request_fields=additional_request_fields)
-    tru_request = model.format_request(messages)
+    tru_request = model._format_request(messages)
     exp_request = {
         "additionalModelRequestFields": additional_request_fields,
         "inferenceConfig": {},
@@ -283,7 +323,7 @@ def test_format_request_additional_request_fields(model, messages, model_id, add
 
 def test_format_request_additional_response_field_paths(model, messages, model_id, additional_response_field_paths):
     model.update_config(additional_response_field_paths=additional_response_field_paths)
-    tru_request = model.format_request(messages)
+    tru_request = model._format_request(messages)
     exp_request = {
         "additionalModelResponseFieldPaths": additional_response_field_paths,
         "inferenceConfig": {},
@@ -297,7 +337,7 @@ def test_format_request_additional_response_field_paths(model, messages, model_i
 
 def test_format_request_guardrail_config(model, messages, model_id, guardrail_config):
     model.update_config(**guardrail_config)
-    tru_request = model.format_request(messages)
+    tru_request = model._format_request(messages)
     exp_request = {
         "guardrailConfig": {
             "guardrailIdentifier": guardrail_config["guardrail_id"],
@@ -321,7 +361,7 @@ def test_format_request_guardrail_config_without_trace_or_stream_processing_mode
             "guardrail_version": "v1",
         }
     )
-    tru_request = model.format_request(messages)
+    tru_request = model._format_request(messages)
     exp_request = {
         "guardrailConfig": {
             "guardrailIdentifier": "g1",
@@ -339,7 +379,7 @@ def test_format_request_guardrail_config_without_trace_or_stream_processing_mode
 
 def test_format_request_inference_config(model, messages, model_id, inference_config):
     model.update_config(**inference_config)
-    tru_request = model.format_request(messages)
+    tru_request = model._format_request(messages)
     exp_request = {
         "inferenceConfig": {
             "maxTokens": inference_config["max_tokens"],
@@ -356,7 +396,7 @@ def test_format_request_inference_config(model, messages, model_id, inference_co
 
 
 def test_format_request_system_prompt(model, messages, model_id, system_prompt):
-    tru_request = model.format_request(messages, system_prompt=system_prompt)
+    tru_request = model._format_request(messages, system_prompt_content=[{"text": system_prompt}])
     exp_request = {
         "inferenceConfig": {},
         "modelId": model_id,
@@ -367,8 +407,54 @@ def test_format_request_system_prompt(model, messages, model_id, system_prompt):
     assert tru_request == exp_request
 
 
+def test_format_request_system_prompt_content(model, messages, model_id):
+    """Test _format_request with SystemContentBlock input."""
+    system_prompt_content = [{"text": "You are a helpful assistant."}, {"cachePoint": {"type": "default"}}]
+
+    tru_request = model._format_request(messages, system_prompt_content=system_prompt_content)
+    exp_request = {
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": system_prompt_content,
+    }
+
+    assert tru_request == exp_request
+
+
+def test_format_request_system_prompt_content_with_cache_prompt_config(model, messages, model_id):
+    """Test _format_request with SystemContentBlock and cache_prompt config (backwards compatibility)."""
+    system_prompt_content = [{"text": "You are a helpful assistant."}]
+    model.update_config(cache_prompt="default")
+
+    with pytest.warns(UserWarning, match="cache_prompt is deprecated"):
+        tru_request = model._format_request(messages, system_prompt_content=system_prompt_content)
+
+    exp_request = {
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": [{"text": "You are a helpful assistant."}, {"cachePoint": {"type": "default"}}],
+    }
+
+    assert tru_request == exp_request
+
+
+def test_format_request_empty_system_prompt_content(model, messages, model_id):
+    """Test _format_request with empty SystemContentBlock list."""
+    tru_request = model._format_request(messages, system_prompt_content=[])
+    exp_request = {
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": [],
+    }
+
+    assert tru_request == exp_request
+
+
 def test_format_request_tool_specs(model, messages, model_id, tool_spec):
-    tru_request = model.format_request(messages, [tool_spec])
+    tru_request = model._format_request(messages, tool_specs=[tool_spec])
     exp_request = {
         "inferenceConfig": {},
         "modelId": model_id,
@@ -383,9 +469,63 @@ def test_format_request_tool_specs(model, messages, model_id, tool_spec):
     assert tru_request == exp_request
 
 
+def test_format_request_tool_choice_auto(model, messages, model_id, tool_spec):
+    tool_choice = {"auto": {}}
+    tru_request = model._format_request(messages, [tool_spec], tool_choice=tool_choice)
+    exp_request = {
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": [],
+        "toolConfig": {
+            "tools": [{"toolSpec": tool_spec}],
+            "toolChoice": tool_choice,
+        },
+    }
+
+    assert tru_request == exp_request
+
+
+def test_format_request_tool_choice_any(model, messages, model_id, tool_spec):
+    tool_choice = {"any": {}}
+    tru_request = model._format_request(messages, [tool_spec], tool_choice=tool_choice)
+    exp_request = {
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": [],
+        "toolConfig": {
+            "tools": [{"toolSpec": tool_spec}],
+            "toolChoice": tool_choice,
+        },
+    }
+
+    assert tru_request == exp_request
+
+
+def test_format_request_tool_choice_tool(model, messages, model_id, tool_spec):
+    tool_choice = {"tool": {"name": "test_tool"}}
+    tru_request = model._format_request(messages, [tool_spec], tool_choice=tool_choice)
+    exp_request = {
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": [],
+        "toolConfig": {
+            "tools": [{"toolSpec": tool_spec}],
+            "toolChoice": tool_choice,
+        },
+    }
+
+    assert tru_request == exp_request
+
+
 def test_format_request_cache(model, messages, model_id, tool_spec, cache_type):
     model.update_config(cache_prompt=cache_type, cache_tools=cache_type)
-    tru_request = model.format_request(messages, [tool_spec])
+
+    with pytest.warns(UserWarning, match="cache_prompt is deprecated"):
+        tru_request = model._format_request(messages, tool_specs=[tool_spec])
+
     exp_request = {
         "inferenceConfig": {},
         "modelId": model_id,
@@ -420,6 +560,15 @@ async def test_stream_throttling_exception_from_event_stream_error(bedrock_clien
 
 
 @pytest.mark.asyncio
+async def test_stream_with_invalid_content_throws(bedrock_client, model, alist):
+    # We used to hang on None, so ensure we don't regress: https://github.com/strands-agents/sdk-python/issues/642
+    messages = [{"role": "user", "content": None}]
+
+    with pytest.raises(TypeError):
+        await alist(model.stream(messages))
+
+
+@pytest.mark.asyncio
 async def test_stream_throttling_exception_from_general_exception(bedrock_client, model, messages, alist):
     error_message = "ThrottlingException: Rate exceeded for ConverseStream"
     bedrock_client.converse_stream.side_effect = ClientError(
@@ -433,6 +582,40 @@ async def test_stream_throttling_exception_from_general_exception(bedrock_client
     bedrock_client.converse_stream.assert_called_once_with(
         modelId="m1", messages=messages, system=[], inferenceConfig={}
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_throttling_exception_lowercase(bedrock_client, model, messages, alist):
+    """Test that lowercase throttlingException is converted to ModelThrottledException."""
+    error_message = "throttlingException: Rate exceeded for ConverseStream"
+    bedrock_client.converse_stream.side_effect = ClientError(
+        {"Error": {"Message": error_message, "Code": "throttlingException"}}, "Any"
+    )
+
+    with pytest.raises(ModelThrottledException) as excinfo:
+        await alist(model.stream(messages))
+
+    assert error_message in str(excinfo.value)
+    bedrock_client.converse_stream.assert_called_once_with(
+        modelId="m1", messages=messages, system=[], inferenceConfig={}
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_throttling_exception_lowercase_non_streaming(bedrock_client, messages, alist):
+    """Test that lowercase throttlingException is converted to ModelThrottledException in non-streaming mode."""
+    error_message = "throttlingException: Rate exceeded for Converse"
+    bedrock_client.converse.side_effect = ClientError(
+        {"Error": {"Message": error_message, "Code": "throttlingException"}}, "Any"
+    )
+
+    model = BedrockModel(model_id="test-model", streaming=False)
+    with pytest.raises(ModelThrottledException) as excinfo:
+        await alist(model.stream(messages))
+
+    assert error_message in str(excinfo.value)
+    bedrock_client.converse.assert_called_once()
+    bedrock_client.converse_stream.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -476,6 +659,51 @@ async def test_stream(bedrock_client, model, messages, tool_spec, model_id, addi
 
 
 @pytest.mark.asyncio
+async def test_stream_with_system_prompt_content(bedrock_client, model, messages, alist):
+    """Test stream method with system_prompt_content parameter."""
+    bedrock_client.converse_stream.return_value = {"stream": ["e1", "e2"]}
+
+    system_prompt_content = [{"text": "You are a helpful assistant."}, {"cachePoint": {"type": "default"}}]
+
+    response = model.stream(messages, system_prompt_content=system_prompt_content)
+    tru_chunks = await alist(response)
+    exp_chunks = ["e1", "e2"]
+
+    assert tru_chunks == exp_chunks
+
+    # Verify the request was formatted with system_prompt_content
+    expected_request = {
+        "inferenceConfig": {},
+        "modelId": "m1",
+        "messages": messages,
+        "system": system_prompt_content,
+    }
+    bedrock_client.converse_stream.assert_called_once_with(**expected_request)
+
+
+@pytest.mark.asyncio
+async def test_stream_backwards_compatibility_single_text_block(bedrock_client, model, messages, alist):
+    """Test that single text block in system_prompt_content works with legacy system_prompt."""
+    bedrock_client.converse_stream.return_value = {"stream": ["e1", "e2"]}
+
+    system_prompt_content = [{"text": "You are a helpful assistant."}]
+
+    response = model.stream(
+        messages, system_prompt="You are a helpful assistant.", system_prompt_content=system_prompt_content
+    )
+    await alist(response)
+
+    # Verify the request was formatted with system_prompt_content
+    expected_request = {
+        "inferenceConfig": {},
+        "modelId": "m1",
+        "messages": messages,
+        "system": system_prompt_content,
+    }
+    bedrock_client.converse_stream.assert_called_once_with(**expected_request)
+
+
+@pytest.mark.asyncio
 async def test_stream_stream_input_guardrails(
     bedrock_client, model, messages, tool_spec, model_id, additional_request_fields, alist
 ):
@@ -494,6 +722,99 @@ async def test_stream_stream_input_guardrails(
                                         "action": "BLOCKED",
                                         "detected": True,
                                     }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    }
+    bedrock_client.converse_stream.return_value = {"stream": [metadata_event]}
+
+    request = {
+        "additionalModelRequestFields": additional_request_fields,
+        "inferenceConfig": {},
+        "modelId": model_id,
+        "messages": messages,
+        "system": [],
+        "toolConfig": {
+            "tools": [{"toolSpec": tool_spec}],
+            "toolChoice": {"auto": {}},
+        },
+    }
+
+    model.update_config(additional_request_fields=additional_request_fields)
+    response = model.stream(messages, [tool_spec])
+
+    tru_chunks = await alist(response)
+    exp_chunks = [
+        {"redactContent": {"redactUserContentMessage": "[User input redacted.]"}},
+        metadata_event,
+    ]
+
+    assert tru_chunks == exp_chunks
+    bedrock_client.converse_stream.assert_called_once_with(**request)
+
+
+@pytest.mark.asyncio
+async def test_stream_stream_input_guardrails_full_trace(
+    bedrock_client, model, messages, tool_spec, model_id, additional_request_fields, alist
+):
+    """Test guardrails are correctly detected also with guardrail_trace="enabled_full".
+    In that case bedrock returns all filters, including those not detected/blocked."""
+    metadata_event = {
+        "metadata": {
+            "usage": {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0},
+            "metrics": {"latencyMs": 245},
+            "trace": {
+                "guardrail": {
+                    "inputAssessment": {
+                        "jrv9qlue4hag": {
+                            "contentPolicy": {
+                                "filters": [
+                                    {
+                                        "action": "NONE",
+                                        "confidence": "NONE",
+                                        "detected": False,
+                                        "filterStrength": "HIGH",
+                                        "type": "SEXUAL",
+                                    },
+                                    {
+                                        "action": "BLOCKED",
+                                        "confidence": "LOW",
+                                        "detected": True,
+                                        "filterStrength": "HIGH",
+                                        "type": "VIOLENCE",
+                                    },
+                                    {
+                                        "action": "NONE",
+                                        "confidence": "NONE",
+                                        "detected": False,
+                                        "filterStrength": "HIGH",
+                                        "type": "HATE",
+                                    },
+                                    {
+                                        "action": "NONE",
+                                        "confidence": "NONE",
+                                        "detected": False,
+                                        "filterStrength": "HIGH",
+                                        "type": "INSULTS",
+                                    },
+                                    {
+                                        "action": "NONE",
+                                        "confidence": "NONE",
+                                        "detected": False,
+                                        "filterStrength": "HIGH",
+                                        "type": "PROMPT_ATTACK",
+                                    },
+                                    {
+                                        "action": "NONE",
+                                        "confidence": "NONE",
+                                        "detected": False,
+                                        "filterStrength": "HIGH",
+                                        "type": "MISCONDUCT",
+                                    },
                                 ]
                             }
                         }
@@ -1112,6 +1433,23 @@ async def test_add_note_on_client_error(bedrock_client, model, alist, messages):
 
 
 @pytest.mark.asyncio
+async def test_add_note_on_client_error_without_add_notes(bedrock_client, model, alist, messages):
+    """Test that when add_note is not used, the region & model are still included in the error output."""
+    with unittest.mock.patch.object(_exception_notes, "supports_add_note", False):
+        # Mock the client error response
+        error_response = {"Error": {"Code": "ValidationException", "Message": "Some error message"}}
+        bedrock_client.converse_stream.side_effect = ClientError(error_response, "ConversationStream")
+
+        # Call the stream method which should catch and add notes to the exception
+        with pytest.raises(ClientError) as err:
+            await alist(model.stream(messages))
+
+    error_str = "".join(traceback.format_exception(err.value))
+    assert "└ Bedrock region: us-west-2" in error_str
+    assert "└ Model id: m1" in error_str
+
+
+@pytest.mark.asyncio
 async def test_no_add_note_when_not_available(bedrock_client, model, alist, messages):
     """Verify that on any python version (even < 3.11 where add_note is not available, we get the right exception)."""
     # Mock the client error response
@@ -1201,8 +1539,54 @@ async def test_stream_logging(bedrock_client, model, messages, caplog, alist):
     assert "finished streaming response from model" in log_text
 
 
+@pytest.mark.asyncio
+async def test_stream_stop_reason_override_streaming(bedrock_client, model, messages, alist):
+    """Test that stopReason is overridden from end_turn to tool_use in streaming mode when tool use is detected."""
+    bedrock_client.converse_stream.return_value = {
+        "stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"start": {"toolUse": {"toolUseId": "123", "name": "test_tool"}}}},
+            {"contentBlockDelta": {"delta": {"test": {"input": '{"param": "value"}'}}}},
+            {"contentBlockStop": {}},
+            {"messageStop": {"stopReason": "end_turn"}},
+        ]
+    }
+
+    response = model.stream(messages)
+    events = await alist(response)
+
+    # Find the messageStop event
+    message_stop_event = next(event for event in events if "messageStop" in event)
+
+    # Verify stopReason was overridden to tool_use
+    assert message_stop_event["messageStop"]["stopReason"] == "tool_use"
+
+
+@pytest.mark.asyncio
+async def test_stream_stop_reason_override_non_streaming(bedrock_client, alist, messages):
+    """Test that stopReason is overridden from end_turn to tool_use in non-streaming mode when tool use is detected."""
+    bedrock_client.converse.return_value = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [{"toolUse": {"toolUseId": "123", "name": "test_tool", "input": {"param": "value"}}}],
+            }
+        },
+        "stopReason": "end_turn",
+    }
+
+    model = BedrockModel(model_id="test-model", streaming=False)
+    response = model.stream(messages)
+    events = await alist(response)
+
+    # Find the messageStop event
+    message_stop_event = next(event for event in events if "messageStop" in event)
+
+    # Verify stopReason was overridden to tool_use
+    assert message_stop_event["messageStop"]["stopReason"] == "tool_use"
+
+
 def test_format_request_cleans_tool_result_content_blocks(model, model_id):
-    """Test that format_request cleans toolResult blocks by removing extra fields."""
     messages = [
         {
             "role": "user",
@@ -1220,11 +1604,469 @@ def test_format_request_cleans_tool_result_content_blocks(model, model_id):
         }
     ]
 
-    formatted_request = model.format_request(messages)
+    formatted_request = model._format_request(messages)
 
-    # Verify toolResult only contains allowed fields in the formatted request
     tool_result = formatted_request["messages"][0]["content"][0]["toolResult"]
-    expected = {"content": [{"text": "Tool output"}], "toolUseId": "tool123", "status": "success"}
+    expected = {"toolUseId": "tool123", "content": [{"text": "Tool output"}]}
     assert tool_result == expected
     assert "extraField" not in tool_result
     assert "mcpMetadata" not in tool_result
+    assert "status" not in tool_result
+
+
+def test_format_request_removes_status_field_when_configured(model, model_id):
+    model.update_config(include_tool_result_status=False)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "content": [{"text": "Tool output"}],
+                        "toolUseId": "tool123",
+                        "status": "success",
+                    }
+                },
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    tool_result = formatted_request["messages"][0]["content"][0]["toolResult"]
+    expected = {"toolUseId": "tool123", "content": [{"text": "Tool output"}]}
+    assert tool_result == expected
+    assert "status" not in tool_result
+
+
+def test_auto_behavior_anthropic_vs_non_anthropic(bedrock_client):
+    model_anthropic = BedrockModel(model_id="us.anthropic.claude-sonnet-4-20250514-v1:0")
+    assert model_anthropic.get_config()["include_tool_result_status"] == "auto"
+
+    model_non_anthropic = BedrockModel(model_id="amazon.titan-text-v1")
+    assert model_non_anthropic.get_config()["include_tool_result_status"] == "auto"
+
+
+def test_explicit_boolean_values_preserved(bedrock_client):
+    model = BedrockModel(model_id="us.anthropic.claude-sonnet-4-20250514-v1:0", include_tool_result_status=True)
+    assert model.get_config()["include_tool_result_status"] is True
+
+    model2 = BedrockModel(model_id="amazon.titan-text-v1", include_tool_result_status=False)
+    assert model2.get_config()["include_tool_result_status"] is False
+    """Test that format_request keeps status field by default for anthropic.claude models."""
+    # Default model is anthropic.claude, so should keep status
+    model = BedrockModel()
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "content": [{"text": "Tool output"}],
+                        "toolUseId": "tool123",
+                        "status": "success",
+                    }
+                },
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    # Verify toolResult contains status field by default
+    tool_result = formatted_request["messages"][0]["content"][0]["toolResult"]
+    expected = {"content": [{"text": "Tool output"}], "toolUseId": "tool123", "status": "success"}
+    assert tool_result == expected
+    assert "status" in tool_result
+
+
+def test_format_request_filters_sdk_unknown_member_content_blocks(model, model_id, caplog):
+    """Test that format_request filters out SDK_UNKNOWN_MEMBER content blocks."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"text": "Hello"},
+                {"SDK_UNKNOWN_MEMBER": {"name": "reasoningContent"}},
+                {"text": "World"},
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    content = formatted_request["messages"][0]["content"]
+    assert len(content) == 2
+    assert content[0] == {"text": "Hello"}
+    assert content[1] == {"text": "World"}
+
+    for block in content:
+        assert "SDK_UNKNOWN_MEMBER" not in block
+
+
+@pytest.mark.asyncio
+async def test_stream_deepseek_filters_reasoning_content(bedrock_client, alist):
+    """Test that DeepSeek models filter reasoningContent from messages during streaming."""
+    model = BedrockModel(model_id="us.deepseek.r1-v1:0")
+
+    messages = [
+        {"role": "user", "content": [{"text": "Hello"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"text": "Response"},
+                {"reasoningContent": {"reasoningText": {"text": "Thinking..."}}},
+            ],
+        },
+    ]
+
+    bedrock_client.converse_stream.return_value = {"stream": []}
+
+    await alist(model.stream(messages))
+
+    # Verify the request was made with filtered messages (no reasoningContent)
+    call_args = bedrock_client.converse_stream.call_args[1]
+    sent_messages = call_args["messages"]
+
+    assert len(sent_messages) == 2
+    assert sent_messages[0]["content"] == [{"text": "Hello"}]
+    assert sent_messages[1]["content"] == [{"text": "Response"}]
+
+
+@pytest.mark.asyncio
+async def test_stream_deepseek_skips_empty_messages(bedrock_client, alist):
+    """Test that DeepSeek models skip messages that would be empty after filtering reasoningContent."""
+    model = BedrockModel(model_id="us.deepseek.r1-v1:0")
+
+    messages = [
+        {"role": "user", "content": [{"text": "Hello"}]},
+        {"role": "assistant", "content": [{"reasoningContent": {"reasoningText": {"text": "Only reasoning..."}}}]},
+        {"role": "user", "content": [{"text": "Follow up"}]},
+    ]
+
+    bedrock_client.converse_stream.return_value = {"stream": []}
+
+    await alist(model.stream(messages))
+
+    # Verify the request was made with only non-empty messages
+    call_args = bedrock_client.converse_stream.call_args[1]
+    sent_messages = call_args["messages"]
+
+    assert len(sent_messages) == 2
+    assert sent_messages[0]["content"] == [{"text": "Hello"}]
+    assert sent_messages[1]["content"] == [{"text": "Follow up"}]
+
+
+def test_format_request_filters_image_content_blocks(model, model_id):
+    """Test that format_request filters extra fields from image content blocks."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "image": {
+                        "format": "png",
+                        "source": {"bytes": b"image_data"},
+                        "filename": "test.png",  # Extra field that should be filtered
+                        "metadata": {"size": 1024},  # Extra field that should be filtered
+                    }
+                },
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    image_block = formatted_request["messages"][0]["content"][0]["image"]
+    expected = {"format": "png", "source": {"bytes": b"image_data"}}
+    assert image_block == expected
+    assert "filename" not in image_block
+    assert "metadata" not in image_block
+
+
+def test_format_request_filters_nested_image_s3_fields(model, model_id):
+    """Test that s3Location is filtered out and only bytes source is preserved."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "image": {
+                        "format": "png",
+                        "source": {
+                            "bytes": b"image_data",
+                            "s3Location": {"bucket": "my-bucket", "key": "image.png", "extraField": "filtered"},
+                        },
+                    }
+                }
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+    image_source = formatted_request["messages"][0]["content"][0]["image"]["source"]
+
+    assert image_source == {"bytes": b"image_data"}
+    assert "s3Location" not in image_source
+
+
+def test_format_request_filters_document_content_blocks(model, model_id):
+    """Test that format_request filters extra fields from document content blocks."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "document": {
+                        "name": "test.pdf",
+                        "source": {"bytes": b"pdf_data"},
+                        "format": "pdf",
+                        "extraField": "should be removed",
+                        "metadata": {"pages": 10},
+                    }
+                },
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    document_block = formatted_request["messages"][0]["content"][0]["document"]
+    expected = {"name": "test.pdf", "source": {"bytes": b"pdf_data"}, "format": "pdf"}
+    assert document_block == expected
+    assert "extraField" not in document_block
+    assert "metadata" not in document_block
+
+
+def test_format_request_filters_nested_reasoning_content(model, model_id):
+    """Test deep filtering of nested reasoningText fields."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "reasoningContent": {
+                        "reasoningText": {"text": "thinking...", "signature": "abc123", "extraField": "filtered"}
+                    }
+                }
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+    reasoning_text = formatted_request["messages"][0]["content"][0]["reasoningContent"]["reasoningText"]
+
+    assert reasoning_text == {"text": "thinking...", "signature": "abc123"}
+
+
+def test_format_request_filters_video_content_blocks(model, model_id):
+    """Test that format_request filters extra fields from video content blocks."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "video": {
+                        "format": "mp4",
+                        "source": {"bytes": b"video_data"},
+                        "duration": 120,  # Extra field that should be filtered
+                        "resolution": "1080p",  # Extra field that should be filtered
+                    }
+                },
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    video_block = formatted_request["messages"][0]["content"][0]["video"]
+    expected = {"format": "mp4", "source": {"bytes": b"video_data"}}
+    assert video_block == expected
+    assert "duration" not in video_block
+    assert "resolution" not in video_block
+
+
+def test_format_request_filters_cache_point_content_blocks(model, model_id):
+    """Test that format_request filters extra fields from cachePoint content blocks."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "cachePoint": {
+                        "type": "default",
+                        "extraField": "should be removed",
+                    }
+                },
+            ],
+        }
+    ]
+
+    formatted_request = model._format_request(messages)
+
+    cache_point_block = formatted_request["messages"][0]["content"][0]["cachePoint"]
+    expected = {"type": "default"}
+    assert cache_point_block == expected
+    assert "extraField" not in cache_point_block
+
+
+def test_config_validation_warns_on_unknown_keys(bedrock_client, captured_warnings):
+    """Test that unknown config keys emit a warning."""
+    BedrockModel(model_id="test-model", invalid_param="test")
+
+    assert len(captured_warnings) == 1
+    assert "Invalid configuration parameters" in str(captured_warnings[0].message)
+    assert "invalid_param" in str(captured_warnings[0].message)
+
+
+def test_update_config_validation_warns_on_unknown_keys(model, captured_warnings):
+    """Test that update_config warns on unknown keys."""
+    model.update_config(wrong_param="test")
+
+    assert len(captured_warnings) == 1
+    assert "Invalid configuration parameters" in str(captured_warnings[0].message)
+    assert "wrong_param" in str(captured_warnings[0].message)
+
+
+def test_tool_choice_supported_no_warning(model, messages, tool_spec, captured_warnings):
+    """Test that toolChoice doesn't emit warning for supported providers."""
+    tool_choice = {"auto": {}}
+    model._format_request(messages, [tool_spec], tool_choice=tool_choice)
+
+    assert len(captured_warnings) == 0
+
+
+def test_tool_choice_none_no_warning(model, messages, captured_warnings):
+    """Test that None toolChoice doesn't emit warning."""
+    model._format_request(messages, tool_choice=None)
+
+    assert len(captured_warnings) == 0
+
+
+def test_get_default_model_with_warning_supported_regions_shows_no_warning(captured_warnings):
+    """Test get_model_prefix_with_warning doesn't warn for supported region prefixes."""
+    BedrockModel._get_default_model_with_warning("us-west-2")
+    BedrockModel._get_default_model_with_warning("eu-west-2")
+    assert len(captured_warnings) == 0
+
+
+def test_get_default_model_for_supported_eu_region_returns_correct_model_id(captured_warnings):
+    model_id = BedrockModel._get_default_model_with_warning("eu-west-1")
+    assert model_id == "eu.anthropic.claude-sonnet-4-20250514-v1:0"
+    assert len(captured_warnings) == 0
+
+
+def test_get_default_model_for_supported_us_region_returns_correct_model_id(captured_warnings):
+    model_id = BedrockModel._get_default_model_with_warning("us-east-1")
+    assert model_id == "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    assert len(captured_warnings) == 0
+
+
+def test_get_default_model_for_supported_gov_region_returns_correct_model_id(captured_warnings):
+    model_id = BedrockModel._get_default_model_with_warning("us-gov-west-1")
+    assert model_id == "us-gov.anthropic.claude-sonnet-4-20250514-v1:0"
+    assert len(captured_warnings) == 0
+
+
+def test_get_model_prefix_for_ap_region_converts_to_apac_endpoint(captured_warnings):
+    """Test _get_default_model_with_warning warns for APAC regions since 'ap' is not in supported prefixes."""
+    model_id = BedrockModel._get_default_model_with_warning("ap-southeast-1")
+    assert model_id == "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+
+
+def test_get_default_model_with_warning_unsupported_region_warns(captured_warnings):
+    """Test _get_default_model_with_warning warns for unsupported regions."""
+    BedrockModel._get_default_model_with_warning("ca-central-1")
+    assert len(captured_warnings) == 1
+    assert "This region ca-central-1 does not support" in str(captured_warnings[0].message)
+    assert "our default inference endpoint" in str(captured_warnings[0].message)
+
+
+def test_get_default_model_with_warning_no_warning_with_custom_model_id(captured_warnings):
+    """Test _get_default_model_with_warning doesn't warn when custom model_id provided."""
+    model_config = {"model_id": "custom-model"}
+    model_id = BedrockModel._get_default_model_with_warning("ca-central-1", model_config)
+
+    assert model_id == "custom-model"
+    assert len(captured_warnings) == 0
+
+
+def test_init_with_unsupported_region_warns(session_cls, captured_warnings):
+    """Test BedrockModel initialization warns for unsupported regions."""
+    BedrockModel(region_name="ca-central-1")
+
+    assert len(captured_warnings) == 1
+    assert "This region ca-central-1 does not support" in str(captured_warnings[0].message)
+
+
+def test_init_with_unsupported_region_custom_model_no_warning(session_cls, captured_warnings):
+    """Test BedrockModel initialization doesn't warn when custom model_id provided."""
+    BedrockModel(region_name="ca-central-1", model_id="custom-model")
+    assert len(captured_warnings) == 0
+
+
+def test_override_default_model_id_uses_the_overriden_value(captured_warnings):
+    with unittest.mock.patch("strands.models.bedrock.DEFAULT_BEDROCK_MODEL_ID", "custom-overridden-model"):
+        model_id = BedrockModel._get_default_model_with_warning("us-east-1")
+        assert model_id == "custom-overridden-model"
+
+
+def test_no_override_uses_formatted_default_model_id(captured_warnings):
+    model_id = BedrockModel._get_default_model_with_warning("us-east-1")
+    assert model_id == "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    assert model_id != _DEFAULT_BEDROCK_MODEL_ID
+    assert len(captured_warnings) == 0
+
+
+def test_custom_model_id_not_overridden_by_region_formatting(session_cls):
+    """Test that custom model_id is not overridden by region formatting."""
+    custom_model_id = "custom.model.id"
+
+    model = BedrockModel(model_id=custom_model_id)
+    model_id = model.get_config().get("model_id")
+
+    assert model_id == custom_model_id
+
+
+def test_format_request_filters_output_schema(model, messages, model_id):
+    """Test that outputSchema is filtered out from tool specs in Bedrock requests."""
+    tool_spec_with_output_schema = {
+        "description": "Test tool with output schema",
+        "name": "test_tool",
+        "inputSchema": {"type": "object", "properties": {}},
+        "outputSchema": {"type": "object", "properties": {"result": {"type": "string"}}},
+    }
+
+    request = model._format_request(messages, [tool_spec_with_output_schema])
+
+    tool_spec = request["toolConfig"]["tools"][0]["toolSpec"]
+
+    # Verify outputSchema is not included
+    assert "outputSchema" not in tool_spec
+
+    # Verify other fields are preserved
+    assert tool_spec["name"] == "test_tool"
+    assert tool_spec["description"] == "Test tool with output schema"
+    assert tool_spec["inputSchema"] == {"type": "object", "properties": {}}
+
+
+@pytest.mark.asyncio
+async def test_stream_backward_compatibility_system_prompt(bedrock_client, model, messages, alist):
+    """Test that system_prompt is converted to system_prompt_content when system_prompt_content is None."""
+    bedrock_client.converse_stream.return_value = {"stream": ["e1", "e2"]}
+
+    system_prompt = "You are a helpful assistant."
+
+    response = model.stream(messages, system_prompt=system_prompt)
+    await alist(response)
+
+    # Verify the request was formatted with system_prompt converted to system_prompt_content
+    expected_request = {
+        "inferenceConfig": {},
+        "modelId": "m1",
+        "messages": messages,
+        "system": [{"text": system_prompt}],
+    }
+    bedrock_client.converse_stream.assert_called_once_with(**expected_request)
