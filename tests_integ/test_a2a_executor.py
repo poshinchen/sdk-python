@@ -17,7 +17,7 @@ from strands.multiagent.a2a import A2AServer
 async def test_a2a_executor_with_real_image():
     """Test A2A server processes a real image file correctly via HTTP."""
     # Read the test image file
-    test_image_path = os.path.join(os.path.dirname(__file__), "yellow.png")
+    test_image_path = os.path.join(os.path.dirname(__file__), "resources/yellow.png")
     with open(test_image_path, "rb") as f:
         original_image_bytes = f.read()
 
@@ -71,7 +71,13 @@ async def test_a2a_executor_with_real_image():
         assert response.status_code == 200
         response_data = response.json()
         assert "completed" == response_data["result"]["status"]["state"]
-        assert "yellow" in response_data["result"]["history"][1]["parts"][0]["text"].lower()
+        all_text = " ".join(
+            part["text"]
+            for artifact in response_data["result"]["artifacts"]
+            for part in artifact["parts"]
+            if part.get("kind") == "text"
+        ).lower()
+        assert "yellow" in all_text
 
     except Exception as e:
         pytest.fail(f"Integration test failed: {e}")
@@ -80,7 +86,7 @@ async def test_a2a_executor_with_real_image():
 def test_a2a_executor_image_roundtrip():
     """Test that image data survives the A2A base64 encoding/decoding roundtrip."""
     # Read the test image
-    test_image_path = os.path.join(os.path.dirname(__file__), "yellow.png")
+    test_image_path = os.path.join(os.path.dirname(__file__), "resources/yellow.png")
     with open(test_image_path, "rb") as f:
         original_bytes = f.read()
 

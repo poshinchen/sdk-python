@@ -1,9 +1,6 @@
 """Bidirectional streaming package."""
 
-import sys
-
-if sys.version_info < (3, 12):
-    raise ImportError("bidi only supported for >= Python 3.12")
+from typing import Any
 
 # Main components - Primary user interface
 # Re-export standard agent events for tool handling
@@ -14,14 +11,10 @@ from ...types._events import (
 )
 from .agent.agent import BidiAgent
 
-# IO channels - Hardware abstraction
-from .io.audio import BidiAudioIO
-
 # Model interface (for custom implementations)
 from .models.model import BidiModel
-from .models.nova_sonic import BidiNovaSonicModel
 
-# Built-in tools
+# Built-in tools (deprecated - use strands_tools.stop instead)
 from .tools import stop_conversation
 
 # Event types - For type hints and event handling
@@ -46,12 +39,6 @@ from .types.events import (
 __all__ = [
     # Main interface
     "BidiAgent",
-    # IO channels
-    "BidiAudioIO",
-    # Model providers
-    "BidiNovaSonicModel",
-    # Built-in tools
-    "stop_conversation",
     # Input Event types
     "BidiTextInputEvent",
     "BidiAudioInputEvent",
@@ -75,4 +62,22 @@ __all__ = [
     "ToolStreamEvent",
     # Model interface
     "BidiModel",
+    # Built-in tools (deprecated)
+    "stop_conversation",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy load IO implementations only when accessed.
+
+    This defers the import of optional dependencies until actually needed.
+    """
+    if name == "BidiAudioIO":
+        from .io.audio import BidiAudioIO
+
+        return BidiAudioIO
+    if name == "BidiTextIO":
+        from .io.text import BidiTextIO
+
+        return BidiTextIO
+    raise AttributeError(f"cannot import name '{name}' from '{__name__}' ({__file__})")

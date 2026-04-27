@@ -169,20 +169,21 @@ response = agent("Tell me about Agentic AI")
 ```
 
 Built-in providers:
- - [Amazon Bedrock](https://strandsagents.com/latest/user-guide/concepts/model-providers/amazon-bedrock/)
- - [Anthropic](https://strandsagents.com/latest/user-guide/concepts/model-providers/anthropic/)
- - [Gemini](https://strandsagents.com/latest/user-guide/concepts/model-providers/gemini/)
- - [Cohere](https://strandsagents.com/latest/user-guide/concepts/model-providers/cohere/)
- - [LiteLLM](https://strandsagents.com/latest/user-guide/concepts/model-providers/litellm/)
- - [llama.cpp](https://strandsagents.com/latest/user-guide/concepts/model-providers/llamacpp/)
- - [LlamaAPI](https://strandsagents.com/latest/user-guide/concepts/model-providers/llamaapi/)
- - [MistralAI](https://strandsagents.com/latest/user-guide/concepts/model-providers/mistral/)
- - [Ollama](https://strandsagents.com/latest/user-guide/concepts/model-providers/ollama/)
- - [OpenAI](https://strandsagents.com/latest/user-guide/concepts/model-providers/openai/)
- - [SageMaker](https://strandsagents.com/latest/user-guide/concepts/model-providers/sagemaker/)
- - [Writer](https://strandsagents.com/latest/user-guide/concepts/model-providers/writer/)
+ - [Amazon Bedrock](https://strandsagents.com/docs/user-guide/concepts/model-providers/amazon-bedrock/)
+ - [Anthropic](https://strandsagents.com/docs/user-guide/concepts/model-providers/anthropic/)
+ - [Gemini](https://strandsagents.com/docs/user-guide/concepts/model-providers/gemini/)
+ - [Cohere](https://strandsagents.com/docs/user-guide/concepts/model-providers/cohere/)
+ - [LiteLLM](https://strandsagents.com/docs/user-guide/concepts/model-providers/litellm/)
+ - [llama.cpp](https://strandsagents.com/docs/user-guide/concepts/model-providers/llamacpp/)
+ - [LlamaAPI](https://strandsagents.com/docs/user-guide/concepts/model-providers/llamaapi/)
+ - [MistralAI](https://strandsagents.com/docs/user-guide/concepts/model-providers/mistral/)
+ - [Ollama](https://strandsagents.com/docs/user-guide/concepts/model-providers/ollama/)
+ - [OpenAI](https://strandsagents.com/docs/user-guide/concepts/model-providers/openai/)
+ - [OpenAI Responses API](https://strandsagents.com/docs/user-guide/concepts/model-providers/openai/)
+ - [SageMaker](https://strandsagents.com/docs/user-guide/concepts/model-providers/sagemaker/)
+ - [Writer](https://strandsagents.com/docs/user-guide/concepts/model-providers/writer/)
 
-Custom providers can be implemented using [Custom Providers](https://strandsagents.com/latest/user-guide/concepts/model-providers/custom_model_provider/)
+Custom providers can be implemented using [Custom Providers](https://strandsagents.com/docs/user-guide/concepts/model-providers/custom_model_provider/)
 
 ### Example tools
 
@@ -201,12 +202,22 @@ It's also available on GitHub via [strands-agents/tools](https://github.com/stra
 
 > **⚠️ Experimental Feature**: Bidirectional streaming is currently in experimental status. APIs may change in future releases as we refine the feature based on user feedback and evolving model capabilities.
 
-Build real-time voice and audio conversations with persistent streaming connections. Unlike traditional request-response patterns, bidirectional streaming maintains long-running conversations where users can interrupt, provide continuous input, and receive real-time audio responses. Get started with your first BidiAgent by following the [Quickstart](https://strandsagents.com/latest/documentation/docs/user-guide/concepts/experimental/bidirectional-streaming/quickstart) guide. 
+Build real-time voice and audio conversations with persistent streaming connections. Unlike traditional request-response patterns, bidirectional streaming maintains long-running conversations where users can interrupt, provide continuous input, and receive real-time audio responses. Get started with your first BidiAgent by following the [Quickstart](https://strandsagents.com/docs/user-guide/concepts/bidirectional-streaming/quickstart/) guide. 
 
 **Supported Model Providers:**
-- Amazon Nova Sonic (`amazon.nova-sonic-v1:0`)
-- Google Gemini Live (`gemini-2.5-flash-native-audio-preview-09-2025`)
-- OpenAI Realtime API (`gpt-realtime`)
+- Amazon Nova Sonic (v1, v2)
+- Google Gemini Live
+- OpenAI Realtime API
+
+**Installation:**
+
+```bash
+# Server-side only (no audio I/O dependencies)
+pip install strands-agents[bidi]
+
+# With audio I/O support (includes PyAudio dependency)
+pip install strands-agents[bidi,bidi-io]
+```
 
 **Quick Example:**
 
@@ -219,11 +230,11 @@ from strands.experimental.bidi.tools import stop_conversation
 from strands_tools import calculator
 
 async def main():
-    # Create bidirectional agent with audio model
+    # Create bidirectional agent with Nova Sonic v2
     model = BidiNovaSonicModel()
     agent = BidiAgent(model=model, tools=[calculator, stop_conversation])
 
-    # Setup audio and text I/O
+    # Setup audio and text I/O (requires bidi-io extra)
     audio_io = BidiAudioIO()
     text_io = BidiTextIO()
 
@@ -238,16 +249,23 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+> **Note**: `BidiAudioIO` and `BidiTextIO` require the `bidi-io` extra. For server-side deployments where audio I/O is handled by clients (browsers, mobile apps), install only `strands-agents[bidi]` and implement custom input/output handlers using the `BidiInput` and `BidiOutput` protocols.
+
 **Configuration Options:**
 
 ```python
-# Configure audio settings
+from strands.experimental.bidi.models import BidiNovaSonicModel
+
+# Configure audio settings and turn detection (v2 only)
 model = BidiNovaSonicModel(
     provider_config={
         "audio": {
             "input_rate": 16000,
             "output_rate": 16000,
             "voice": "matthew"
+        },
+        "turn_detection": {
+            "endpointingSensitivity": "MEDIUM"  # HIGH, MEDIUM, or LOW
         },
         "inference": {
             "max_tokens": 2048,
@@ -263,6 +281,19 @@ audio_io = BidiAudioIO(
     input_buffer_size=10,
     output_buffer_size=10
 )
+
+# Text input mode (type messages instead of speaking)
+text_io = BidiTextIO()
+await agent.run(
+    inputs=[text_io.input()],  # Use text input
+    outputs=[audio_io.output(), text_io.output()]
+)
+
+# Multi-modal: Both audio and text input
+await agent.run(
+    inputs=[audio_io.input(), text_io.input()],  # Speak OR type
+    outputs=[audio_io.output(), text_io.output()]
+)
 ```
 
 ## Documentation
@@ -270,11 +301,11 @@ audio_io = BidiAudioIO(
 For detailed guidance & examples, explore our documentation:
 
 - [User Guide](https://strandsagents.com/)
-- [Quick Start Guide](https://strandsagents.com/latest/user-guide/quickstart/)
-- [Agent Loop](https://strandsagents.com/latest/user-guide/concepts/agents/agent-loop/)
-- [Examples](https://strandsagents.com/latest/examples/)
-- [API Reference](https://strandsagents.com/latest/api-reference/agent/)
-- [Production & Deployment Guide](https://strandsagents.com/latest/user-guide/deploy/operating-agents-in-production/)
+- [Quick Start Guide](https://strandsagents.com/docs/user-guide/quickstart/)
+- [Agent Loop](https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/)
+- [Examples](https://strandsagents.com/docs/examples/)
+- [API Reference](https://strandsagents.com/docs/api/python/strands.agent.agent/)
+- [Production & Deployment Guide](https://strandsagents.com/docs/user-guide/deploy/operating-agents-in-production/)
 
 ## Contributing ❤️
 

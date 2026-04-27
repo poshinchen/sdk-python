@@ -5,17 +5,19 @@
 
 import json
 import logging
-from typing import Any, AsyncGenerator, Optional, Type, TypeVar, Union, cast
+import uuid
+from collections.abc import AsyncGenerator
+from typing import Any, TypeVar, cast
 
 import ollama
 from pydantic import BaseModel
-from typing_extensions import TypedDict, Unpack, override
+from typing_extensions import Unpack, override
 
 from ..types.content import ContentBlock, Messages
 from ..types.streaming import StopReason, StreamEvent
 from ..types.tools import ToolChoice, ToolSpec
-from ._validation import validate_config_keys, warn_on_tool_choice_not_supported
-from .model import Model
+from ._validation import _has_location_source, validate_config_keys, warn_on_tool_choice_not_supported
+from .model import BaseModelConfig, Model
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ class OllamaModel(Model):
     - Tool/function calling
     """
 
-    class OllamaConfig(TypedDict, total=False):
+    class OllamaConfig(BaseModelConfig, total=False):
         """Configuration parameters for Ollama models.
 
         Attributes:
@@ -46,20 +48,20 @@ class OllamaModel(Model):
             top_p: Controls diversity via nucleus sampling (alternative to temperature).
         """
 
-        additional_args: Optional[dict[str, Any]]
-        keep_alive: Optional[str]
-        max_tokens: Optional[int]
+        additional_args: dict[str, Any] | None
+        keep_alive: str | None
+        max_tokens: int | None
         model_id: str
-        options: Optional[dict[str, Any]]
-        stop_sequences: Optional[list[str]]
-        temperature: Optional[float]
-        top_p: Optional[float]
+        options: dict[str, Any] | None
+        stop_sequences: list[str] | None
+        temperature: float | None
+        top_p: float | None
 
     def __init__(
         self,
-        host: Optional[str],
+        host: str | None,
         *,
-        ollama_client_args: Optional[dict[str, Any]] = None,
+        ollama_client_args: dict[str, Any] | None = None,
         **model_config: Unpack[OllamaConfig],
     ) -> None:
         """Initialize provider instance.
@@ -123,7 +125,7 @@ class OllamaModel(Model):
                     "tool_calls": [
                         {
                             "function": {
-                                "name": content["toolUse"]["toolUseId"],
+                                "name": content["toolUse"]["name"],
                                 "arguments": content["toolUse"]["input"],
                             }
                         }
@@ -147,7 +149,7 @@ class OllamaModel(Model):
 
         raise TypeError(f"content_type=<{next(iter(content))}> | unsupported type")
 
-    def _format_request_messages(self, messages: Messages, system_prompt: Optional[str] = None) -> list[dict[str, Any]]:
+    def _format_request_messages(self, messages: Messages, system_prompt: str | None = None) -> list[dict[str, Any]]:
         """Format an Ollama compatible messages array.
 
         Args:
@@ -159,15 +161,19 @@ class OllamaModel(Model):
         """
         system_message = [{"role": "system", "content": system_prompt}] if system_prompt else []
 
-        return system_message + [
-            formatted_message
-            for message in messages
-            for content in message["content"]
-            for formatted_message in self._format_request_message_contents(message["role"], content)
-        ]
+        formatted_messages = []
+        for message in messages:
+            for content in message["content"]:
+                # Check for location sources and skip with warning
+                if _has_location_source(content):
+                    logger.warning("Location sources are not supported by Ollama | skipping content block")
+                    continue
+                formatted_messages.extend(self._format_request_message_contents(message["role"], content))
+
+        return system_message + formatted_messages
 
     def format_request(
-        self, messages: Messages, tool_specs: Optional[list[ToolSpec]] = None, system_prompt: Optional[str] = None
+        self, messages: Messages, tool_specs: list[ToolSpec] | None = None, system_prompt: str | None = None
     ) -> dict[str, Any]:
         """Format an Ollama chat streaming request.
 
@@ -241,7 +247,8 @@ class OllamaModel(Model):
                     return {"contentBlockStart": {"start": {}}}
 
                 tool_name = event["data"].function.name
-                return {"contentBlockStart": {"start": {"toolUse": {"name": tool_name, "toolUseId": tool_name}}}}
+                tool_use_id = f"tooluse_{uuid.uuid4().hex[:24]}"
+                return {"contentBlockStart": {"start": {"toolUse": {"name": tool_name, "toolUseId": tool_use_id}}}}
 
             case "content_delta":
                 if event["data_type"] == "text":
@@ -268,8 +275,8 @@ class OllamaModel(Model):
                 return {
                     "metadata": {
                         "usage": {
-                            "inputTokens": event["data"].eval_count,
-                            "outputTokens": event["data"].prompt_eval_count,
+                            "inputTokens": event["data"].prompt_eval_count,
+                            "outputTokens": event["data"].eval_count,
                             "totalTokens": event["data"].eval_count + event["data"].prompt_eval_count,
                         },
                         "metrics": {
@@ -285,8 +292,8 @@ class OllamaModel(Model):
     async def stream(
         self,
         messages: Messages,
-        tool_specs: Optional[list[ToolSpec]] = None,
-        system_prompt: Optional[str] = None,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -339,8 +346,8 @@ class OllamaModel(Model):
 
     @override
     async def structured_output(
-        self, output_model: Type[T], prompt: Messages, system_prompt: Optional[str] = None, **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Union[T, Any]], None]:
+        self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+    ) -> AsyncGenerator[dict[str, T | Any], None]:
         """Get structured output from the model.
 
         Args:

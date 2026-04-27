@@ -1,6 +1,6 @@
 import asyncio
 import unittest.mock
-from unittest.mock import ANY, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from pydantic import BaseModel
@@ -34,9 +34,7 @@ async def streaming_tool():
 
 @pytest.fixture
 def mock_sleep():
-    with unittest.mock.patch.object(
-        strands.event_loop.event_loop.asyncio, "sleep", new_callable=unittest.mock.AsyncMock
-    ) as mock:
+    with patch.object(strands.event_loop._retry.asyncio, "sleep", new_callable=AsyncMock) as mock:
         yield mock
 
 
@@ -86,7 +84,7 @@ async def test_stream_e2e_success(alist):
     mock_callback = unittest.mock.Mock()
     agent = Agent(model=mock_provider, tools=[async_tool, normal_tool, streaming_tool], callback_handler=mock_callback)
 
-    stream = agent.stream_async("Do the stuff", arg1=1013)
+    stream = agent.stream_async("Do the stuff", invocation_state={"arg1": 1013})
 
     tool_config = {
         "toolChoice": {"auto": {}},
@@ -149,6 +147,7 @@ async def test_stream_e2e_success(alist):
                     {"toolUse": {"input": {}, "name": "normal_tool", "toolUseId": "123"}},
                 ],
                 "role": "assistant",
+                "metadata": ANY,
             }
         },
         {
@@ -207,6 +206,7 @@ async def test_stream_e2e_success(alist):
                     {"toolUse": {"input": {}, "name": "async_tool", "toolUseId": "1234"}},
                 ],
                 "role": "assistant",
+                "metadata": ANY,
             }
         },
         {
@@ -265,6 +265,7 @@ async def test_stream_e2e_success(alist):
                     {"toolUse": {"input": {}, "name": "streaming_tool", "toolUseId": "12345"}},
                 ],
                 "role": "assistant",
+                "metadata": ANY,
             }
         },
         {
@@ -309,11 +310,11 @@ async def test_stream_e2e_success(alist):
         },
         {"event": {"contentBlockStop": {}}},
         {"event": {"messageStop": {"stopReason": "end_turn"}}},
-        {"message": {"content": [{"text": "I invoked the tools!"}], "role": "assistant"}},
+        {"message": {"content": [{"text": "I invoked the tools!"}], "role": "assistant", "metadata": ANY}},
         {
             "result": AgentResult(
                 stop_reason="end_turn",
-                message={"content": [{"text": "I invoked the tools!"}], "role": "assistant"},
+                message={"content": [{"text": "I invoked the tools!"}], "role": "assistant", "metadata": ANY},
                 metrics=ANY,
                 state={},
             ),
@@ -346,7 +347,7 @@ async def test_stream_e2e_throttle_and_redact(alist, mock_sleep):
     mock_callback = unittest.mock.Mock()
     agent = Agent(model=model, tools=[normal_tool], callback_handler=mock_callback)
 
-    stream = agent.stream_async("Do the stuff", arg1=1013)
+    stream = agent.stream_async("Do the stuff", invocation_state={"arg1": 1013})
 
     # Base object with common properties
     throttle_props = {
@@ -359,8 +360,8 @@ async def test_stream_e2e_throttle_and_redact(alist, mock_sleep):
         {"arg1": 1013, "init_event_loop": True},
         {"start": True},
         {"start_event_loop": True},
+        {"event_loop_throttled_delay": 4, **throttle_props},
         {"event_loop_throttled_delay": 8, **throttle_props},
-        {"event_loop_throttled_delay": 16, **throttle_props},
         {"event": {"messageStart": {"role": "assistant"}}},
         {"event": {"redactContent": {"redactUserContentMessage": "BLOCKED!"}}},
         {"event": {"contentBlockStart": {"start": {}}}},
@@ -373,11 +374,11 @@ async def test_stream_e2e_throttle_and_redact(alist, mock_sleep):
         },
         {"event": {"contentBlockStop": {}}},
         {"event": {"messageStop": {"stopReason": "guardrail_intervened"}}},
-        {"message": {"content": [{"text": "INPUT BLOCKED!"}], "role": "assistant"}},
+        {"message": {"content": [{"text": "INPUT BLOCKED!"}], "role": "assistant", "metadata": ANY}},
         {
             "result": AgentResult(
                 stop_reason="guardrail_intervened",
-                message={"content": [{"text": "INPUT BLOCKED!"}], "role": "assistant"},
+                message={"content": [{"text": "INPUT BLOCKED!"}], "role": "assistant", "metadata": ANY},
                 metrics=ANY,
                 state={},
             ),
@@ -444,6 +445,7 @@ async def test_stream_e2e_reasoning_redacted_content(alist):
                     {"text": "Response with redacted reasoning"},
                 ],
                 "role": "assistant",
+                "metadata": ANY,
             }
         },
         {
@@ -455,6 +457,7 @@ async def test_stream_e2e_reasoning_redacted_content(alist):
                         {"text": "Response with redacted reasoning"},
                     ],
                     "role": "assistant",
+                    "metadata": ANY,
                 },
                 metrics=ANY,
                 state={},
@@ -494,7 +497,7 @@ async def test_event_loop_cycle_text_response_throttling_early_end(
 
         # Because we're throwing an exception, we manually collect the items here
         tru_events = []
-        stream = agent.stream_async("Do the stuff", arg1=1013)
+        stream = agent.stream_async("Do the stuff", invocation_state={"arg1": 1013})
         async for event in stream:
             tru_events.append(event)
 
@@ -508,11 +511,11 @@ async def test_event_loop_cycle_text_response_throttling_early_end(
         {"init_event_loop": True, "arg1": 1013},
         {"start": True},
         {"start_event_loop": True},
+        {"event_loop_throttled_delay": 4, **common_props},
         {"event_loop_throttled_delay": 8, **common_props},
         {"event_loop_throttled_delay": 16, **common_props},
         {"event_loop_throttled_delay": 32, **common_props},
         {"event_loop_throttled_delay": 64, **common_props},
-        {"event_loop_throttled_delay": 128, **common_props},
         {"force_stop": True, "force_stop_reason": "ThrottlingException | ConverseStream"},
     ]
 
@@ -527,6 +530,7 @@ async def test_event_loop_cycle_text_response_throttling_early_end(
     assert typed_events == []
 
 
+@pytest.mark.filterwarnings("ignore:Agent.structured_output_async method is deprecated:DeprecationWarning")
 @pytest.mark.asyncio
 async def test_structured_output(agenerator):
     # we use bedrock here as it uses the tool implementation

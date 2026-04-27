@@ -5,7 +5,8 @@
 
 import json
 import logging
-from typing import Any, AsyncGenerator, Optional, Type, TypedDict, TypeVar, Union, cast
+from collections.abc import AsyncGenerator
+from typing import Any, TypeVar, cast
 
 import litellm
 from litellm.exceptions import ContextWindowExceededError
@@ -18,11 +19,16 @@ from ..types.content import ContentBlock, Messages, SystemContentBlock
 from ..types.event_loop import Usage
 from ..types.exceptions import ContextWindowOverflowException
 from ..types.streaming import MetadataEvent, StreamEvent
-from ..types.tools import ToolChoice, ToolSpec
+from ..types.tools import ToolChoice, ToolSpec, ToolUse
 from ._validation import validate_config_keys
+from .model import BaseModelConfig
 from .openai import OpenAIModel
 
 logger = logging.getLogger(__name__)
+
+# Separator used by LiteLLM to embed thought signatures inside tool call IDs.
+# See: https://ai.google.dev/gemini-api/docs/thought-signatures
+_THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -30,7 +36,7 @@ T = TypeVar("T", bound=BaseModel)
 class LiteLLMModel(OpenAIModel):
     """LiteLLM model provider implementation."""
 
-    class LiteLLMConfig(TypedDict, total=False):
+    class LiteLLMConfig(BaseModelConfig, total=False):
         """Configuration options for LiteLLM models.
 
         Attributes:
@@ -42,9 +48,9 @@ class LiteLLMModel(OpenAIModel):
         """
 
         model_id: str
-        params: Optional[dict[str, Any]]
+        params: dict[str, Any] | None
 
-    def __init__(self, client_args: Optional[dict[str, Any]] = None, **model_config: Unpack[LiteLLMConfig]) -> None:
+    def __init__(self, client_args: dict[str, Any] | None = None, **model_config: Unpack[LiteLLMConfig]) -> None:
         """Initialize provider instance.
 
         Args:
@@ -113,6 +119,61 @@ class LiteLLMModel(OpenAIModel):
 
         return super().format_request_message_content(content)
 
+    @override
+    @classmethod
+    def format_request_message_tool_call(cls, tool_use: ToolUse, **kwargs: Any) -> dict[str, Any]:
+        """Format a LiteLLM compatible tool call, encoding thought signatures into the tool call ID.
+
+        Gemini thinking models attach a thought_signature to each function call. LiteLLM's OpenAI-compatible
+        interface embeds this signature inside the tool call ID using the ``__thought__`` separator. When
+        ``reasoningSignature`` is present and the tool call ID does not already contain the separator, this
+        method encodes it so LiteLLM can reconstruct the Gemini-native format on the next request.
+
+        Args:
+            tool_use: Tool use requested by the model.
+            **kwargs: Additional keyword arguments for future extensibility.
+
+        Returns:
+            LiteLLM compatible tool call dict with thought signature encoded in the ID when present.
+        """
+        tool_call = super().format_request_message_tool_call(tool_use, **kwargs)
+
+        reasoning_signature = tool_use.get("reasoningSignature")
+        if reasoning_signature and _THOUGHT_SIGNATURE_SEPARATOR not in tool_call["id"]:
+            tool_call["id"] = f"{tool_call['id']}{_THOUGHT_SIGNATURE_SEPARATOR}{reasoning_signature}"
+
+        return tool_call
+
+    @staticmethod
+    def _extract_thought_signature(data: Any) -> str | None:
+        """Extract thought signature from a tool call event data.
+
+        LiteLLM surfaces Gemini thought signatures in two ways:
+
+        1. ``provider_specific_fields.thought_signature`` — a structured field set by LiteLLM's Gemini response
+           transformer. Checked first as it doesn't depend on matching an internal string constant.
+        2. ``__thought__`` separator encoded in the tool call ID. Used as fallback since it relies on a copy of
+           LiteLLM's internal ``THOUGHT_SIGNATURE_SEPARATOR`` constant.
+
+        Args:
+            data: Tool call event data object.
+
+        Returns:
+            The extracted thought signature, or None if not present.
+        """
+        # Preferred: structured field that doesn't depend on matching an internal separator string
+        psf = getattr(data, "provider_specific_fields", None) or {}
+        if isinstance(psf, dict) and psf.get("thought_signature"):
+            return str(psf["thought_signature"])
+
+        # Fallback: extract from encoded ID (relies on hardcoded copy of LiteLLM's separator)
+        tool_call_id = getattr(data, "id", None) or ""
+        if isinstance(tool_call_id, str) and _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+            _, signature = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
+            return signature
+
+        return None
+
     def _stream_switch_content(self, data_type: str, prev_data_type: str | None) -> tuple[list[StreamEvent], str]:
         """Handle switching to a new content stream.
 
@@ -137,9 +198,9 @@ class LiteLLMModel(OpenAIModel):
     @classmethod
     def _format_system_messages(
         cls,
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
         *,
-        system_prompt_content: Optional[list[SystemContentBlock]] = None,
+        system_prompt_content: list[SystemContentBlock] | None = None,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Format system messages for LiteLLM with cache point support.
@@ -160,11 +221,14 @@ class LiteLLMModel(OpenAIModel):
         for block in system_prompt_content or []:
             if "text" in block:
                 system_content.append({"type": "text", "text": block["text"]})
-            elif "cachePoint" in block and block["cachePoint"].get("type") == "default":
+            elif "cachePoint" in block and block["cachePoint"]["type"] == "default":
                 # Apply cache control to the immediately preceding content block
                 # for LiteLLM/Anthropic compatibility
                 if system_content:
-                    system_content[-1]["cache_control"] = {"type": "ephemeral"}
+                    cache_control: dict[str, Any] = {"type": "ephemeral"}
+                    if ttl := block["cachePoint"].get("ttl"):
+                        cache_control["ttl"] = ttl
+                    system_content[-1]["cache_control"] = cache_control
 
         # Create single system message with content array rather than mulitple system messages
         return [{"role": "system", "content": system_content}] if system_content else []
@@ -174,9 +238,9 @@ class LiteLLMModel(OpenAIModel):
     def format_request_messages(
         cls,
         messages: Messages,
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
         *,
-        system_prompt_content: Optional[list[SystemContentBlock]] = None,
+        system_prompt_content: list[SystemContentBlock] | None = None,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Format a LiteLLM compatible messages array with cache point support.
@@ -193,14 +257,15 @@ class LiteLLMModel(OpenAIModel):
         formatted_messages = cls._format_system_messages(system_prompt, system_prompt_content=system_prompt_content)
         formatted_messages.extend(cls._format_regular_messages(messages))
 
-        return [message for message in formatted_messages if message["content"] or "tool_calls" in message]
+        return [message for message in formatted_messages if "content" in message or "tool_calls" in message]
 
     @override
     def format_chunk(self, event: dict[str, Any], **kwargs: Any) -> StreamEvent:
         """Format a LiteLLM response event into a standardized message chunk.
 
-        This method overrides OpenAI's format_chunk to handle the metadata case
-        with prompt caching support. All other chunk types use the parent implementation.
+        Extends OpenAI's format_chunk to:
+        1. Handle metadata with prompt caching support.
+        2. Extract thought signatures that LiteLLM embeds in tool call IDs for Gemini thinking models.
 
         Args:
             event: A response event from the LiteLLM model.
@@ -236,6 +301,17 @@ class LiteLLMModel(OpenAIModel):
                     usage=usage_data,
                 )
             )
+
+        # Extract thought signature from tool call content_start events.
+        # The full encoded ID is kept in toolUseId so that tool result messages continue to match.
+        if event["chunk_type"] == "content_start" and event.get("data_type") == "tool":
+            signature = self._extract_thought_signature(event.get("data"))
+            chunk = super().format_chunk(event)
+            if signature:
+                tool_use_dict = cast(dict, chunk["contentBlockStart"]["start"]["toolUse"])
+                tool_use_dict["reasoningSignature"] = signature
+            return chunk
+
         # For all other cases, use the parent implementation
         return super().format_chunk(event)
 
@@ -243,11 +319,11 @@ class LiteLLMModel(OpenAIModel):
     async def stream(
         self,
         messages: Messages,
-        tool_specs: Optional[list[ToolSpec]] = None,
-        system_prompt: Optional[str] = None,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
         *,
         tool_choice: ToolChoice | None = None,
-        system_prompt_content: Optional[list[SystemContentBlock]] = None,
+        system_prompt_content: list[SystemContentBlock] | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream conversation with the LiteLLM model.
@@ -269,80 +345,34 @@ class LiteLLMModel(OpenAIModel):
         )
         logger.debug("request=<%s>", request)
 
-        logger.debug("invoking model")
+        # Check if streaming is disabled in the params
+        config = self.get_config()
+        params = config.get("params") or {}
+        is_streaming = params.get("stream", True)
+
+        litellm_request = {**request}
+
+        litellm_request["stream"] = is_streaming
+
+        logger.debug("invoking model with stream=%s", litellm_request.get("stream"))
+
         try:
-            if kwargs.get("stream") is False:
-                raise ValueError("stream parameter cannot be explicitly set to False")
-            response = await litellm.acompletion(**self.client_args, **request)
+            if is_streaming:
+                async for chunk in self._handle_streaming_response(litellm_request):
+                    yield chunk
+            else:
+                async for chunk in self._handle_non_streaming_response(litellm_request):
+                    yield chunk
         except ContextWindowExceededError as e:
             logger.warning("litellm client raised context window overflow")
             raise ContextWindowOverflowException(e) from e
 
-        logger.debug("got response from model")
-        yield self.format_chunk({"chunk_type": "message_start"})
-
-        tool_calls: dict[int, list[Any]] = {}
-        data_type: str | None = None
-
-        async for event in response:
-            # Defensive: skip events with empty or missing choices
-            if not getattr(event, "choices", None):
-                continue
-            choice = event.choices[0]
-
-            if hasattr(choice.delta, "reasoning_content") and choice.delta.reasoning_content:
-                chunks, data_type = self._stream_switch_content("reasoning_content", data_type)
-                for chunk in chunks:
-                    yield chunk
-
-                yield self.format_chunk(
-                    {
-                        "chunk_type": "content_delta",
-                        "data_type": data_type,
-                        "data": choice.delta.reasoning_content,
-                    }
-                )
-
-            if choice.delta.content:
-                chunks, data_type = self._stream_switch_content("text", data_type)
-                for chunk in chunks:
-                    yield chunk
-
-                yield self.format_chunk(
-                    {"chunk_type": "content_delta", "data_type": data_type, "data": choice.delta.content}
-                )
-
-            for tool_call in choice.delta.tool_calls or []:
-                tool_calls.setdefault(tool_call.index, []).append(tool_call)
-
-            if choice.finish_reason:
-                if data_type:
-                    yield self.format_chunk({"chunk_type": "content_stop", "data_type": data_type})
-                break
-
-        for tool_deltas in tool_calls.values():
-            yield self.format_chunk({"chunk_type": "content_start", "data_type": "tool", "data": tool_deltas[0]})
-
-            for tool_delta in tool_deltas:
-                yield self.format_chunk({"chunk_type": "content_delta", "data_type": "tool", "data": tool_delta})
-
-            yield self.format_chunk({"chunk_type": "content_stop", "data_type": "tool"})
-
-        yield self.format_chunk({"chunk_type": "message_stop", "data": choice.finish_reason})
-
-        # Skip remaining events as we don't have use for anything except the final usage payload
-        async for event in response:
-            _ = event
-
-        if event.usage:
-            yield self.format_chunk({"chunk_type": "metadata", "data": event.usage})
-
-        logger.debug("finished streaming response from model")
+        logger.debug("finished processing response from model")
 
     @override
     async def structured_output(
-        self, output_model: Type[T], prompt: Messages, system_prompt: Optional[str] = None, **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Union[T, Any]], None]:
+        self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+    ) -> AsyncGenerator[dict[str, T | Any], None]:
         """Get structured output from the model.
 
         Some models do not support native structured output via response_format.
@@ -368,7 +398,7 @@ class LiteLLMModel(OpenAIModel):
         yield {"output": result}
 
     async def _structured_output_using_response_schema(
-        self, output_model: Type[T], prompt: Messages, system_prompt: Optional[str] = None
+        self, output_model: type[T], prompt: Messages, system_prompt: str | None = None
     ) -> T:
         """Get structured output using native response_format support."""
         response = await litellm.acompletion(
@@ -396,7 +426,7 @@ class LiteLLMModel(OpenAIModel):
             raise ValueError(f"Failed to parse or load content into model: {e}") from e
 
     async def _structured_output_using_tool(
-        self, output_model: Type[T], prompt: Messages, system_prompt: Optional[str] = None
+        self, output_model: type[T], prompt: Messages, system_prompt: str | None = None
     ) -> T:
         """Get structured output using tool calling fallback."""
         tool_spec = convert_pydantic_to_tool_spec(output_model)
@@ -421,6 +451,181 @@ class LiteLLMModel(OpenAIModel):
             raise ContextWindowOverflowException(e) from e
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             raise ValueError(f"Failed to parse or load content into model: {e}") from e
+
+    async def _process_choice_content(
+        self, choice: Any, data_type: str | None, tool_calls: dict[int, list[Any]], is_streaming: bool = True
+    ) -> AsyncGenerator[tuple[str | None, StreamEvent], None]:
+        """Process content from a choice object (streaming or non-streaming).
+
+        Args:
+            choice: The choice object from the response.
+            data_type: Current data type being processed.
+            tool_calls: Dictionary to collect tool calls.
+            is_streaming: Whether this is from a streaming response.
+
+        Yields:
+            Tuples of (updated_data_type, stream_event).
+        """
+        # Get the content source - this is the only difference between streaming/non-streaming
+        # We use duck typing here: both choice.delta and choice.message have the same interface
+        # (reasoning_content, content, tool_calls attributes) but different object structures
+        content_source = choice.delta if is_streaming else choice.message
+
+        # Process reasoning content
+        if hasattr(content_source, "reasoning_content") and content_source.reasoning_content:
+            chunks, data_type = self._stream_switch_content("reasoning_content", data_type)
+            for chunk in chunks:
+                yield data_type, chunk
+            chunk = self.format_chunk(
+                {
+                    "chunk_type": "content_delta",
+                    "data_type": "reasoning_content",
+                    "data": content_source.reasoning_content,
+                }
+            )
+            yield data_type, chunk
+
+        # Process text content
+        if hasattr(content_source, "content") and content_source.content:
+            chunks, data_type = self._stream_switch_content("text", data_type)
+            for chunk in chunks:
+                yield data_type, chunk
+            chunk = self.format_chunk(
+                {
+                    "chunk_type": "content_delta",
+                    "data_type": "text",
+                    "data": content_source.content,
+                }
+            )
+            yield data_type, chunk
+
+        # Process tool calls
+        if hasattr(content_source, "tool_calls") and content_source.tool_calls:
+            if is_streaming:
+                # Streaming: tool calls have index attribute for out-of-order delivery
+                for tool_call in content_source.tool_calls:
+                    tool_calls.setdefault(tool_call.index, []).append(tool_call)
+            else:
+                # Non-streaming: tool calls arrive in order, use enumerated index
+                for i, tool_call in enumerate(content_source.tool_calls):
+                    tool_calls.setdefault(i, []).append(tool_call)
+
+    async def _process_tool_calls(self, tool_calls: dict[int, list[Any]]) -> AsyncGenerator[StreamEvent, None]:
+        """Process and yield tool call events.
+
+        Args:
+            tool_calls: Dictionary of tool calls indexed by their position.
+
+        Yields:
+            Formatted tool call chunks.
+        """
+        for tool_deltas in tool_calls.values():
+            yield self.format_chunk({"chunk_type": "content_start", "data_type": "tool", "data": tool_deltas[0]})
+
+            for tool_delta in tool_deltas:
+                yield self.format_chunk({"chunk_type": "content_delta", "data_type": "tool", "data": tool_delta})
+
+            yield self.format_chunk({"chunk_type": "content_stop", "data_type": "tool"})
+
+    async def _handle_non_streaming_response(
+        self, litellm_request: dict[str, Any]
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Handle non-streaming response from LiteLLM.
+
+        Args:
+            litellm_request: The formatted request for LiteLLM.
+
+        Yields:
+            Formatted message chunks from the model.
+        """
+        response = await litellm.acompletion(**self.client_args, **litellm_request)
+
+        logger.debug("got non-streaming response from model")
+        yield self.format_chunk({"chunk_type": "message_start"})
+
+        tool_calls: dict[int, list[Any]] = {}
+        data_type: str | None = None
+        finish_reason: str | None = None
+
+        if hasattr(response, "choices") and response.choices and len(response.choices) > 0:
+            choice = response.choices[0]
+
+            if hasattr(choice, "message") and choice.message:
+                # Process content using shared logic
+                async for updated_data_type, chunk in self._process_choice_content(
+                    choice, data_type, tool_calls, is_streaming=False
+                ):
+                    data_type = updated_data_type
+                    yield chunk
+
+            if hasattr(choice, "finish_reason"):
+                finish_reason = choice.finish_reason
+
+        # Stop the current content block if we have one
+        if data_type:
+            yield self.format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+
+        # Process tool calls
+        async for chunk in self._process_tool_calls(tool_calls):
+            yield chunk
+
+        yield self.format_chunk({"chunk_type": "message_stop", "data": finish_reason})
+
+        # Add usage information if available
+        if hasattr(response, "usage"):
+            yield self.format_chunk({"chunk_type": "metadata", "data": response.usage})
+
+    async def _handle_streaming_response(self, litellm_request: dict[str, Any]) -> AsyncGenerator[StreamEvent, None]:
+        """Handle streaming response from LiteLLM.
+
+        Args:
+            litellm_request: The formatted request for LiteLLM.
+
+        Yields:
+            Formatted message chunks from the model.
+        """
+        # For streaming, use the streaming API
+        response = await litellm.acompletion(**self.client_args, **litellm_request)
+
+        logger.debug("got response from model")
+        yield self.format_chunk({"chunk_type": "message_start"})
+
+        tool_calls: dict[int, list[Any]] = {}
+        data_type: str | None = None
+        finish_reason: str | None = None
+
+        async for event in response:
+            # Defensive: skip events with empty or missing choices
+            if not getattr(event, "choices", None):
+                continue
+            choice = event.choices[0]
+
+            # Process content using shared logic
+            async for updated_data_type, chunk in self._process_choice_content(
+                choice, data_type, tool_calls, is_streaming=True
+            ):
+                data_type = updated_data_type
+                yield chunk
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+                if data_type:
+                    yield self.format_chunk({"chunk_type": "content_stop", "data_type": data_type})
+                break
+
+        # Process tool calls
+        async for chunk in self._process_tool_calls(tool_calls):
+            yield chunk
+
+        yield self.format_chunk({"chunk_type": "message_stop", "data": finish_reason})
+
+        # Skip remaining events as we don't have use for anything except the final usage payload
+        async for event in response:
+            _ = event
+            if usage := getattr(event, "usage", None):
+                yield self.format_chunk({"chunk_type": "metadata", "data": usage})
+
+        logger.debug("finished streaming response from model")
 
     def _apply_proxy_prefix(self) -> None:
         """Apply litellm_proxy/ prefix to model_id when use_litellm_proxy is True.

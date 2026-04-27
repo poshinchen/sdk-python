@@ -1,3 +1,6 @@
+import time
+import uuid
+
 import pydantic
 import pytest
 
@@ -71,6 +74,27 @@ def test_non_streaming_agent(non_streaming_agent):
     result = non_streaming_agent("Hello!")
 
     assert len(str(result)) > 0
+
+
+def test_bedrock_service_tier_flex_invocation_succeeds():
+    """Bedrock accepts serviceTier when model and region support Priority/Flex tiers.
+
+    Tier support is model- and region-specific. See:
+    https://docs.aws.amazon.com/bedrock/latest/userguide/service-tiers-inference.html
+
+    CI runs integ tests with AWS_REGION=us-east-1; amazon.nova-pro-v1:0 is listed for
+    that region under Priority and Flex tiers.
+    """
+    model = BedrockModel(
+        model_id="amazon.nova-pro-v1:0",
+        region_name="us-east-1",
+        service_tier="flex",
+    )
+    agent = Agent(model=model, load_tools_from_directory=False)
+    result = agent("Reply with exactly the word: ok")
+
+    assert result.stop_reason == "end_turn"
+    assert len(str(result).strip()) > 0
 
 
 @pytest.mark.asyncio
@@ -210,6 +234,9 @@ def test_document_citations(non_streaming_agent, letter_pdf):
 
     assert any("citationsContent" in content for content in non_streaming_agent.messages[-1]["content"])
 
+    # Validate message structure is valid in multi-turn
+    non_streaming_agent("What is your favorite part?")
+
 
 def test_document_citations_streaming(streaming_agent, letter_pdf):
     content: list[ContentBlock] = [
@@ -227,6 +254,9 @@ def test_document_citations_streaming(streaming_agent, letter_pdf):
     streaming_agent(content)
 
     assert any("citationsContent" in content for content in streaming_agent.messages[-1]["content"])
+
+    # Validate message structure is valid in multi-turn
+    streaming_agent("What is your favorite part?")
 
 
 def test_structured_output_multi_modal_input(streaming_agent, yellow_img, yellow_color):
@@ -269,6 +299,43 @@ def test_redacted_content_handling():
     assert isinstance(result.message["content"][0]["reasoningContent"]["redactedContent"], bytes)
 
 
+def test_reasoning_content_in_messages_with_thinking_disabled():
+    """Test that messages with reasoningContent are accepted when thinking is explicitly disabled."""
+    # First, get a real reasoning response with thinking enabled
+    thinking_model = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+        additional_request_fields={
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 1024,
+            }
+        },
+    )
+    agent_with_thinking = Agent(model=thinking_model)
+    result_with_thinking = agent_with_thinking("What is 2+2?")
+
+    # Verify we got reasoning content
+    assert "reasoningContent" in result_with_thinking.message["content"][0]
+
+    # Now create a model with thinking disabled and use the messages from the thinking session
+    disabled_model = BedrockModel(
+        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+        additional_request_fields={
+            "thinking": {
+                "type": "disabled",
+            }
+        },
+    )
+
+    # Use the conversation history that includes reasoning content
+    messages = agent_with_thinking.messages
+
+    agent_disabled = Agent(model=disabled_model, messages=messages)
+    result = agent_disabled("What about 3+3?")
+
+    assert result.stop_reason == "end_turn"
+
+
 def test_multi_prompt_system_content():
     """Test multi-prompt system content blocks."""
     system_prompt_content = [
@@ -280,3 +347,208 @@ def test_multi_prompt_system_content():
     agent = Agent(system_prompt=system_prompt_content, load_tools_from_directory=False)
     # just verifying there is no failure
     agent("Hello!")
+
+
+def test_prompt_caching_with_5m_ttl():
+    """Test prompt caching with 5 minute TTL and verify cache metrics.
+
+    This test verifies:
+    1. First call creates cache (cacheWriteInputTokens > 0)
+    2. Second call reads from cache (cacheReadInputTokens > 0)
+
+    Uses Claude Haiku 4.5 which supports TTL in CachePointBlock on Bedrock.
+    Older models (e.g. Claude Sonnet 4) reject the TTL field with a ValidationException.
+    """
+    model = BedrockModel(
+        model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        streaming=False,
+    )
+
+    # Use unique identifier to avoid cache conflicts between test runs
+    unique_id = str(uuid.uuid4())
+    # Minimum 4096 tokens required for caching with Haiku 4.5
+    large_context = f"Background information for test {unique_id}: " + ("This is important context. " * 1000)
+
+    system_prompt_with_cache = [
+        {"text": large_context},
+        {"cachePoint": {"type": "default", "ttl": "5m"}},
+        {"text": "You are a helpful assistant."},
+    ]
+
+    agent = Agent(
+        model=model,
+        system_prompt=system_prompt_with_cache,
+        load_tools_from_directory=False,
+    )
+
+    # First call should create the cache (cache write)
+    result1 = agent("What is 2+2?")
+    assert len(str(result1)) > 0
+
+    # Verify cache write occurred on first call
+    assert result1.metrics.accumulated_usage.get("cacheWriteInputTokens", 0) > 0, (
+        "Expected cacheWriteInputTokens > 0 on first call"
+    )
+
+    # Second call should use the cached content (cache read)
+    result2 = agent("What is 3+3?")
+    assert len(str(result2)) > 0
+
+    # Verify cache read occurred on second call
+    assert result2.metrics.accumulated_usage.get("cacheReadInputTokens", 0) > 0, (
+        "Expected cacheReadInputTokens > 0 on second call"
+    )
+
+
+def test_prompt_caching_with_1h_ttl():
+    """Test prompt caching with 1 hour TTL and verify cache metrics.
+
+    Uses Claude Haiku 4.5 which supports 1hr TTL.
+    Uses unique content per test run to avoid cache conflicts with concurrent CI runs.
+    Even with 1hr TTL, unique content ensures cache entries don't interfere across tests.
+    """
+    model = BedrockModel(
+        model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        streaming=False,
+    )
+
+    # Use timestamp to ensure unique content per test run (avoids CI conflicts)
+    unique_id = str(int(time.time() * 1000000))  # microsecond timestamp
+    # Minimum 4096 tokens required for caching with Haiku 4.5
+    large_context = f"Background information for test {unique_id}: " + ("This is important context. " * 1000)
+
+    system_prompt_with_cache = [
+        {"text": large_context},
+        {"cachePoint": {"type": "default", "ttl": "1h"}},
+        {"text": "You are a helpful assistant."},
+    ]
+
+    agent = Agent(
+        model=model,
+        system_prompt=system_prompt_with_cache,
+        load_tools_from_directory=False,
+    )
+
+    # First call should create the cache
+    result1 = agent("What is 2+2?")
+    assert len(str(result1)) > 0
+
+    # Verify cache write occurred
+    assert result1.metrics.accumulated_usage.get("cacheWriteInputTokens", 0) > 0, (
+        "Expected cacheWriteInputTokens > 0 on first call with 1h TTL"
+    )
+
+    # Second call should use the cached content
+    result2 = agent("What is 3+3?")
+    assert len(str(result2)) > 0
+
+    # Verify cache read occurred
+    assert result2.metrics.accumulated_usage.get("cacheReadInputTokens", 0) > 0, (
+        "Expected cacheReadInputTokens > 0 on second call with 1h TTL"
+    )
+
+
+def test_prompt_caching_with_ttl_in_messages():
+    """Test prompt caching with TTL in message content and verify cache metrics.
+
+    Uses Claude Haiku 4.5 which supports TTL in CachePointBlock on Bedrock.
+    Older models (e.g. Claude Sonnet 4) reject the TTL field with a ValidationException.
+    """
+    model = BedrockModel(
+        model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        streaming=False,
+    )
+    agent = Agent(model=model, load_tools_from_directory=False)
+
+    unique_id = str(uuid.uuid4())
+    # Minimum 4096 tokens required for caching with Haiku 4.5
+    large_text = f"Important context for test {unique_id}: " + ("This is critical information. " * 1000)
+
+    content_with_cache = [
+        {"text": large_text},
+        {"cachePoint": {"type": "default", "ttl": "5m"}},
+        {"text": "Based on the context above, what is 5+5?"},
+    ]
+
+    # First call creates cache
+    result1 = agent(content_with_cache)
+    assert len(str(result1)) > 0
+
+    # Verify cache write in message content
+    assert result1.metrics.accumulated_usage.get("cacheWriteInputTokens", 0) > 0, (
+        "Expected cacheWriteInputTokens > 0 when caching message content"
+    )
+
+    # Subsequent call should use cache
+    result2 = agent("What about 10+10?")
+    assert len(str(result2)) > 0
+
+    # Verify cache read on subsequent call
+    assert result2.metrics.accumulated_usage.get("cacheReadInputTokens", 0) > 0, (
+        "Expected cacheReadInputTokens > 0 on subsequent call"
+    )
+
+
+def test_prompt_caching_backward_compatibility_no_ttl(non_streaming_model):
+    """Test that prompt caching works without TTL (backward compatibility).
+
+    Verifies that cache points work correctly when TTL is not specified,
+    maintaining backward compatibility with existing code.
+    """
+    unique_id = str(uuid.uuid4())
+    large_context = f"Background information for test {unique_id}: " + ("This is important context. " * 200)
+
+    system_prompt_with_cache = [
+        {"text": large_context},
+        {"cachePoint": {"type": "default"}},  # No TTL specified
+        {"text": "You are a helpful assistant."},
+    ]
+
+    agent = Agent(
+        model=non_streaming_model,
+        system_prompt=system_prompt_with_cache,
+        load_tools_from_directory=False,
+    )
+
+    result = agent("Hello!")
+    assert len(str(result)) > 0
+
+    # Verify cache write occurred even without TTL
+    assert result.metrics.accumulated_usage.get("cacheWriteInputTokens", 0) > 0, (
+        "Expected cacheWriteInputTokens > 0 even without TTL specified"
+    )
+
+
+class TestCountTokens:
+    @pytest.fixture
+    def model(self):
+        return BedrockModel(model_id="anthropic.claude-sonnet-4-20250514-v1:0")
+
+    @pytest.fixture
+    def messages(self):
+        return [{"role": "user", "content": [{"text": "What is the capital of France? Explain in detail."}]}]
+
+    @pytest.fixture
+    def tool_specs(self):
+        return [
+            {
+                "name": "get_weather",
+                "description": "Get the current weather for a location",
+                "inputSchema": {"json": {"type": "object", "properties": {"location": {"type": "string"}}}},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_messages_only(self, model, messages, caplog):
+        with caplog.at_level("DEBUG"):
+            result = await model.count_tokens(messages=messages)
+        assert isinstance(result, int)
+        assert result > 0
+        assert "native token count" in caplog.text
+        assert "falling back" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_with_tools_greater_than_without(self, model, messages, tool_specs):
+        without = await model.count_tokens(messages=messages)
+        with_tools = await model.count_tokens(messages=messages, tool_specs=tool_specs, system_prompt="Be helpful.")
+        assert with_tools > without

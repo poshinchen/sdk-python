@@ -18,22 +18,23 @@ import copy
 import json
 import logging
 import time
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Mapping, Optional, Tuple, cast
+from typing import Any, Optional, cast
 
 from opentelemetry import trace as trace_api
 
 from .._async import run_async
 from ..agent import Agent
 from ..agent.state import AgentState
-from ..experimental.hooks.multiagent import (
+from ..hooks.events import (
     AfterMultiAgentInvocationEvent,
     AfterNodeCallEvent,
     BeforeMultiAgentInvocationEvent,
     BeforeNodeCallEvent,
     MultiAgentInitializedEvent,
 )
-from ..hooks import HookProvider, HookRegistry
+from ..hooks.registry import HookProvider, HookRegistry
 from ..interrupt import Interrupt, _InterruptState
 from ..session import SessionManager
 from ..telemetry import get_tracer
@@ -50,6 +51,7 @@ from ..types._events import (
 from ..types.content import ContentBlock, Messages
 from ..types.event_loop import Metrics, Usage
 from ..types.multiagent import MultiAgentInput
+from ..types.session import decode_bytes_values, encode_bytes_values
 from ..types.traces import AttributeValue
 from .base import MultiAgentBase, MultiAgentResult, NodeResult, Status
 
@@ -67,12 +69,14 @@ class SwarmNode:
     swarm: Optional["Swarm"] = None
     _initial_messages: Messages = field(default_factory=list, init=False)
     _initial_state: AgentState = field(default_factory=AgentState, init=False)
+    _initial_model_state: dict[str, Any] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Capture initial executor state after initialization."""
         # Deep copy the initial messages and state to preserve them
         self._initial_messages = copy.deepcopy(self.executor.messages)
         self._initial_state = AgentState(self.executor.state.get())
+        self._initial_model_state = copy.deepcopy(self.executor._model_state)
 
     def __hash__(self) -> int:
         """Return hash for SwarmNode based on node_id."""
@@ -102,10 +106,12 @@ class SwarmNode:
             self.executor.messages = context["messages"]
             self.executor.state = AgentState(context["state"])
             self.executor._interrupt_state = _InterruptState.from_dict(context["interrupt_state"])
+            self.executor._model_state = context.get("model_state", {})
             return
 
         self.executor.messages = copy.deepcopy(self._initial_messages)
         self.executor.state = AgentState(self._initial_state.get())
+        self.executor._model_state = copy.deepcopy(self._initial_model_state)
 
 
 @dataclass
@@ -184,7 +190,7 @@ class SwarmState:
         execution_timeout: float,
         repetitive_handoff_detection_window: int,
         repetitive_handoff_min_unique_agents: int,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Check if the swarm should continue.
 
         Returns: (should_continue, reason)
@@ -198,7 +204,7 @@ class SwarmState:
             return False, f"Max iterations reached: {max_iterations}"
 
         # Check timeout
-        elapsed = time.time() - self.start_time
+        elapsed = self.execution_time / 1000 + time.time() - self.start_time
         if elapsed > execution_timeout:
             return False, f"Execution timed out: {execution_timeout}s"
 
@@ -239,10 +245,10 @@ class Swarm(MultiAgentBase):
         node_timeout: float = 300.0,
         repetitive_handoff_detection_window: int = 0,
         repetitive_handoff_min_unique_agents: int = 0,
-        session_manager: Optional[SessionManager] = None,
-        hooks: Optional[list[HookProvider]] = None,
+        session_manager: SessionManager | None = None,
+        hooks: list[HookProvider] | None = None,
         id: str = _DEFAULT_SWARM_ID,
-        trace_attributes: Optional[Mapping[str, AttributeValue]] = None,
+        trace_attributes: Mapping[str, AttributeValue] | None = None,
     ) -> None:
         """Initialize Swarm with agents and configuration.
 
@@ -405,7 +411,7 @@ class Swarm(MultiAgentBase):
                 self.state.completion_status = Status.FAILED
                 raise
             finally:
-                self.state.execution_time = round((time.time() - self.state.start_time) * 1000)
+                self.state.execution_time += round((time.time() - self.state.start_time) * 1000)
                 await self.hooks.invoke_callbacks_async(AfterMultiAgentInvocationEvent(self, invocation_state))
                 self._resume_from_session = False
 
@@ -695,6 +701,7 @@ class Swarm(MultiAgentBase):
             "interrupt_state": node.executor._interrupt_state.to_dict(),
             "state": node.executor.state.get(),
             "messages": node.executor.messages,
+            "model_state": node.executor._model_state,
         }
 
         self._interrupt_state.interrupts.update({interrupt.id: interrupt for interrupt in interrupts})
@@ -781,9 +788,10 @@ class Swarm(MultiAgentBase):
                     break
 
                 finally:
-                    await self.hooks.invoke_callbacks_async(
-                        AfterNodeCallEvent(self, current_node.node_id, invocation_state)
-                    )
+                    if self.state.completion_status != Status.INTERRUPTED:
+                        await self.hooks.invoke_callbacks_async(
+                            AfterNodeCallEvent(self, current_node.node_id, invocation_state)
+                        )
 
                 logger.debug("node=<%s> | node execution completed", current_node.node_id)
 
@@ -963,7 +971,7 @@ class Swarm(MultiAgentBase):
             "node_history": [n.node_id for n in self.state.node_history],
             "node_results": {k: v.to_dict() for k, v in self.state.results.items()},
             "next_nodes_to_execute": next_nodes,
-            "current_task": self.state.task,
+            "current_task": encode_bytes_values(self.state.task),
             "context": {
                 "shared_context": getattr(self.state.shared_context, "context", {}) or {},
                 "handoff_node": self.state.handoff_node.node_id if self.state.handoff_node else None,
@@ -1026,7 +1034,7 @@ class Swarm(MultiAgentBase):
                 logger.exception("Failed to hydrate NodeResult for node_id=%s; skipping.", node_id)
                 raise
         self.state.results = results
-        self.state.task = payload.get("current_task", self.state.task)
+        self.state.task = decode_bytes_values(payload.get("current_task", self.state.task))
 
         next_node_ids = payload.get("next_nodes_to_execute") or []
         if next_node_ids:

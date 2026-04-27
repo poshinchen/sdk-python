@@ -5,7 +5,7 @@ import inspect
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ..interrupt import _InterruptState
 from .content import Message
@@ -69,7 +69,7 @@ class SessionMessage:
 
     message: Message
     message_id: int
-    redact_message: Optional[Message] = None
+    redact_message: Message | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -134,6 +134,7 @@ class SessionAgent:
             state=agent.state.get(),
             _internal_state={
                 "interrupt_state": agent._interrupt_state.to_dict(),
+                "model_state": agent._model_state,
             },
         )
 
@@ -175,6 +176,8 @@ class SessionAgent:
         """Initialize internal state of agent."""
         if "interrupt_state" in self._internal_state:
             agent._interrupt_state = _InterruptState.from_dict(self._internal_state["interrupt_state"])
+        if "model_state" in self._internal_state:
+            agent._model_state = self._internal_state["model_state"]
 
     def initialize_bidi_internal_state(self, agent: "BidiAgent") -> None:
         """Initialize internal state of BidiAgent.

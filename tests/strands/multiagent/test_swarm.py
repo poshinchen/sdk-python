@@ -6,7 +6,7 @@ import pytest
 
 from strands.agent import Agent, AgentResult
 from strands.agent.state import AgentState
-from strands.experimental.hooks.multiagent import BeforeNodeCallEvent
+from strands.hooks import BeforeNodeCallEvent
 from strands.hooks.registry import HookRegistry
 from strands.interrupt import Interrupt, _InterruptState
 from strands.multiagent.base import Status
@@ -25,6 +25,7 @@ def create_mock_agent(name, response_text="Default response", metrics=None, agen
     agent.messages = []
     agent.state = AgentState()  # Add state attribute
     agent._interrupt_state = _InterruptState()  # Add interrupt state
+    agent._model_state = {}  # Add model state
     agent.tool_registry = Mock()
     agent.tool_registry.registry = {}
     agent.tool_registry.process_tools = Mock()
@@ -1106,7 +1107,10 @@ async def test_swarm_stream_async_exception_in_execute_swarm(mock_strands_tracer
 
 @pytest.mark.asyncio
 async def test_swarm_persistence(mock_strands_tracer, mock_use_span):
-    """Test swarm persistence functionality."""
+    """Test swarm persistence functionality with multimodal input containing binary bytes."""
+    import base64
+    import json
+
     # Create mock session manager
     session_manager = Mock(spec=FileSessionManager)
     session_manager.read_multi_agent.return_value = None
@@ -1127,7 +1131,40 @@ async def test_swarm_persistence(mock_strands_tracer, mock_use_span):
     assert "node_results" in state
     assert "context" in state
 
-    # Test apply_state_from_dict with persisted state
+    # Build a multimodal prompt with inline binary PDF bytes (the problematic case)
+    pdf_bytes = b"%PDF-1.4 binary content"
+    multimodal_task = [
+        {"text": "Analyze this PDF"},
+        {
+            "document": {
+                "format": "pdf",
+                "name": "document.pdf",
+                "source": {
+                    "bytes": pdf_bytes,
+                },
+            }
+        },
+    ]
+
+    # Simulate swarm having executed with a multimodal task
+    swarm.state.task = multimodal_task
+
+    # serialize_state must not raise TypeError for bytes
+    serialized = swarm.serialize_state()
+    assert json.dumps(serialized)  # must be JSON-serializable
+
+    # The bytes should be encoded in the serialized form
+    encoded_bytes = serialized["current_task"][1]["document"]["source"]["bytes"]
+    assert encoded_bytes == {"__bytes_encoded__": True, "data": base64.b64encode(pdf_bytes).decode()}
+
+    # deserialize_state must restore bytes back to original
+    serialized["next_nodes_to_execute"] = ["test_agent"]
+    serialized["status"] = "executing"
+    swarm.deserialize_state(serialized)
+    restored_bytes = swarm.state.task[1]["document"]["source"]["bytes"]
+    assert restored_bytes == pdf_bytes
+
+    # Test apply_state_from_dict with plain string persisted state (backward compat)
     persisted_state = {
         "status": "executing",
         "node_history": [],
@@ -1243,6 +1280,8 @@ def test_swarm_interrupt_on_before_node_call_event(interrupt_hook):
 
     multiagent_result = swarm("Test task")
 
+    first_execution_time = multiagent_result.execution_time
+
     tru_status = multiagent_result.status
     exp_status = Status.INTERRUPTED
     assert tru_status == exp_status
@@ -1256,6 +1295,10 @@ def test_swarm_interrupt_on_before_node_call_event(interrupt_hook):
         ),
     ]
     assert tru_interrupts == exp_interrupts
+
+    tru_after_count = interrupt_hook.after_count
+    exp_after_count = 0
+    assert tru_after_count == exp_after_count
 
     interrupt = multiagent_result.interrupts[0]
     responses = [
@@ -1278,6 +1321,12 @@ def test_swarm_interrupt_on_before_node_call_event(interrupt_hook):
     tru_message = agent_result.result.message["content"][0]["text"]
     exp_message = "Task completed"
     assert tru_message == exp_message
+
+    tru_after_count = interrupt_hook.after_count
+    exp_after_count = 1
+    assert tru_after_count == exp_after_count
+
+    assert multiagent_result.execution_time >= first_execution_time
 
 
 def test_swarm_interrupt_on_agent(agenerator):

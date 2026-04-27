@@ -77,6 +77,12 @@ class SessionException(Exception):
     pass
 
 
+class SnapshotException(Exception):
+    """Exception raised when snapshot operations fail (e.g., unsupported schema version)."""
+
+    pass
+
+
 class ToolProviderException(Exception):
     """Exception raised when a tool provider fails to load or cleanup tools."""
 
@@ -94,3 +100,14 @@ class StructuredOutputException(Exception):
         """
         self.message = message
         super().__init__(message)
+
+
+class ConcurrencyException(Exception):
+    """Exception raised when concurrent invocations are attempted on an agent instance.
+
+    Agent instances maintain internal state that cannot be safely accessed concurrently.
+    This exception is raised when an invocation is attempted while another invocation
+    is already in progress on the same agent instance.
+    """
+
+    pass

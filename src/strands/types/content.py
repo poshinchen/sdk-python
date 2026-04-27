@@ -6,11 +6,12 @@ SDK. These types are modeled after the Bedrock API.
 - Bedrock docs: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_Types_Amazon_Bedrock_Runtime.html
 """
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Literal
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from .citations import CitationsContentBlock
+from .event_loop import Metrics, Usage
 from .media import DocumentContent, ImageContent, VideoContent
 from .tools import ToolResult, ToolUse
 
@@ -23,7 +24,7 @@ class GuardContentText(TypedDict):
         text: The input text details to be evaluated by the guardrail.
     """
 
-    qualifiers: List[Literal["grounding_source", "query", "guard_content"]]
+    qualifiers: list[Literal["grounding_source", "query", "guard_content"]]
     text: str
 
 
@@ -45,7 +46,7 @@ class ReasoningTextBlock(TypedDict, total=False):
         text: The reasoning that the model used to return the output.
     """
 
-    signature: Optional[str]
+    signature: str | None
     text: str
 
 
@@ -66,9 +67,12 @@ class CachePoint(TypedDict):
 
     Attributes:
         type: The type of cache point, typically "default".
+        ttl: Optional cache TTL duration (e.g. "5m", "1h"). Supported by providers
+            that accept Anthropic-compatible cache_control fields.
     """
 
     type: str
+    ttl: NotRequired[str]
 
 
 class ContentBlock(TypedDict, total=False):
@@ -120,7 +124,7 @@ class DeltaContent(TypedDict, total=False):
     """
 
     text: str
-    toolUse: Dict[Literal["input"], str]
+    toolUse: dict[Literal["input"], str]
 
 
 class ContentBlockStartToolUse(TypedDict):
@@ -129,10 +133,12 @@ class ContentBlockStartToolUse(TypedDict):
     Attributes:
         name: The name of the tool that the model is requesting to use.
         toolUseId: The ID for the tool request.
+        reasoningSignature: Token that ties the model's reasoning to this tool call.
     """
 
     name: str
     toolUseId: str
+    reasoningSignature: NotRequired[str]
 
 
 class ContentBlockStart(TypedDict, total=False):
@@ -142,7 +148,7 @@ class ContentBlockStart(TypedDict, total=False):
         toolUse: Information about a tool that the model is requesting to use.
     """
 
-    toolUse: Optional[ContentBlockStartToolUse]
+    toolUse: ContentBlockStartToolUse | None
 
 
 class ContentBlockDelta(TypedDict):
@@ -175,17 +181,44 @@ Role = Literal["user", "assistant"]
 """
 
 
+class MessageMetadata(TypedDict, total=False):
+    """Optional metadata attached to a message.
+
+    Not sent to model providers — explicitly stripped before model calls.
+    Persisted alongside the message in session storage.
+
+    Attributes:
+        usage: Token usage information from the model response.
+        metrics: Performance metrics from the model response.
+        custom: Arbitrary user/framework metadata (e.g. compression provenance).
+    """
+
+    usage: Usage
+    metrics: Metrics
+    custom: dict[str, Any]
+
+
 class Message(TypedDict):
     """A message in a conversation with the agent.
 
     Attributes:
         content: The message content.
         role: The role of the message sender.
+        metadata: Optional metadata, stripped before model calls.
     """
 
-    content: List[ContentBlock]
+    content: list[ContentBlock]
     role: Role
+    metadata: NotRequired[MessageMetadata]
 
 
-Messages = List[Message]
+Messages = list[Message]
 """A list of messages representing a conversation."""
+
+
+def get_message_metadata(message: Message) -> MessageMetadata:
+    """Get metadata for a message, returning empty dict if not present.
+
+    Individual fields (usage, metrics, custom) may not be present. Use .get() to safely access them.
+    """
+    return message.get("metadata", {})

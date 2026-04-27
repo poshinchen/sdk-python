@@ -7,8 +7,9 @@ enabling trace data to be sent to OTLP endpoints.
 import json
 import logging
 import os
+from collections.abc import Mapping
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Mapping, Optional, cast
+from typing import Any, cast
 
 import opentelemetry.trace as trace_api
 from opentelemetry.instrumentation.threading import ThreadingInstrumentor
@@ -82,14 +83,14 @@ class Tracer:
     When the OTEL_EXPORTER_OTLP_ENDPOINT environment variable is set, traces
     are sent to the OTLP endpoint.
 
-    Both attributes are controlled by including "gen_ai_latest_experimental" or "gen_ai_tool_definitions",
-    respectively, in the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
+    Both attributes are controlled by including "gen_ai_latest_experimental", "gen_ai_tool_definitions",
+    or "gen_ai_use_latest_invocation_tokens", respectively, in the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
     """
 
     def __init__(self) -> None:
         """Initialize the tracer."""
         self.service_name = __name__
-        self.tracer_provider: Optional[trace_api.TracerProvider] = None
+        self.tracer_provider: trace_api.TracerProvider | None = None
         self.tracer_provider = trace_api.get_tracer_provider()
         self.tracer = self.tracer_provider.get_tracer(self.service_name)
         ThreadingInstrumentor().instrument()
@@ -99,6 +100,7 @@ class Tracer:
         ## To-do: should not set below attributes directly, use env var instead
         self.use_latest_genai_conventions = "gen_ai_latest_experimental" in opt_in_values
         self._include_tool_definitions = "gen_ai_tool_definitions" in opt_in_values
+        self._use_latest_invocation_tokens = "gen_ai_use_latest_invocation_tokens" in opt_in_values
 
     def _parse_semconv_opt_in(self) -> set[str]:
         """Parse the OTEL_SEMCONV_STABILITY_OPT_IN environment variable.
@@ -109,11 +111,23 @@ class Tracer:
         opt_in_env = os.getenv("OTEL_SEMCONV_STABILITY_OPT_IN", "")
         return {value.strip() for value in opt_in_env.split(",")}
 
+    @property
+    def is_langfuse(self) -> bool:
+        """Check if Langfuse is configured as the OTLP endpoint.
+
+        Returns:
+            True if Langfuse is the OTLP endpoint, False otherwise.
+        """
+        return any(
+            "langfuse" in os.getenv(var, "")
+            for var in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "LANGFUSE_BASE_URL")
+        )
+
     def _start_span(
         self,
         span_name: str,
-        parent_span: Optional[Span] = None,
-        attributes: Optional[Dict[str, AttributeValue]] = None,
+        parent_span: Span | None = None,
+        attributes: dict[str, AttributeValue] | None = None,
         span_kind: trace_api.SpanKind = trace_api.SpanKind.INTERNAL,
     ) -> Span:
         """Generic helper method to start a span with common attributes.
@@ -141,25 +155,12 @@ class Tracer:
 
         # Add all provided attributes
         if attributes:
-            self._set_attributes(span, attributes)
+            span.set_attributes(attributes)
 
         return span
 
-    def _set_attributes(self, span: Span, attributes: Dict[str, AttributeValue]) -> None:
-        """Set attributes on a span, handling different value types appropriately.
-
-        Args:
-            span: The span to set attributes on
-            attributes: Dictionary of attributes to set
-        """
-        if not span:
-            return
-
-        for key, value in attributes.items():
-            span.set_attribute(key, value)
-
     def _add_optional_usage_and_metrics_attributes(
-        self, attributes: Dict[str, AttributeValue], usage: Usage, metrics: Metrics
+        self, attributes: dict[str, AttributeValue], usage: Usage, metrics: Metrics
     ) -> None:
         """Add optional usage and metrics attributes if they have values.
 
@@ -183,8 +184,9 @@ class Tracer:
     def _end_span(
         self,
         span: Span,
-        attributes: Optional[Dict[str, AttributeValue]] = None,
-        error: Optional[Exception] = None,
+        attributes: dict[str, AttributeValue] | None = None,
+        error: Exception | None = None,
+        error_message: str | None = None,
     ) -> None:
         """Generic helper method to end a span.
 
@@ -192,8 +194,9 @@ class Tracer:
             span: The span to end
             attributes: Optional attributes to set before ending the span
             error: Optional exception if an error occurred
+            error_message: Optional error message to set in the span status
         """
-        if not span:
+        if not span or not span.is_recording():
             return
 
         try:
@@ -202,11 +205,12 @@ class Tracer:
 
             # Add any additional attributes
             if attributes:
-                self._set_attributes(span, attributes)
+                span.set_attributes(attributes)
 
             # Handle error if present
             if error:
-                span.set_status(StatusCode.ERROR, str(error))
+                status_description = error_message or str(error) or type(error).__name__
+                span.set_status(StatusCode.ERROR, status_description)
                 span.record_exception(error)
             else:
                 span.set_status(StatusCode.OK)
@@ -214,14 +218,8 @@ class Tracer:
             logger.warning("error=<%s> | error while ending span", e, exc_info=True)
         finally:
             span.end()
-            # Force flush to ensure spans are exported
-            if self.tracer_provider and hasattr(self.tracer_provider, "force_flush"):
-                try:
-                    self.tracer_provider.force_flush()
-                except Exception as e:
-                    logger.warning("error=<%s> | failed to force flush tracer provider", e)
 
-    def end_span_with_error(self, span: Span, error_message: str, exception: Optional[Exception] = None) -> None:
+    def end_span_with_error(self, span: Span, error_message: str, exception: Exception | None = None) -> None:
         """End a span with error status.
 
         Args:
@@ -229,22 +227,29 @@ class Tracer:
             error_message: Error message to set in the span status.
             exception: Optional exception to record in the span.
         """
-        if not span:
+        if not span or not span.is_recording():
             return
 
         error = exception or Exception(error_message)
-        self._end_span(span, error=error)
+        self._end_span(span, error=error, error_message=error_message)
 
-    def _add_event(self, span: Optional[Span], event_name: str, event_attributes: Attributes) -> None:
+    def _add_event(
+        self, span: Span | None, event_name: str, event_attributes: Attributes, to_span_attributes: bool = False
+    ) -> None:
         """Add an event with attributes to a span.
 
         Args:
             span: The span to add the event to
             event_name: Name of the event
             event_attributes: Dictionary of attributes to set on the event
+            to_span_attributes: Add the attributes to span attributes
         """
         if not span:
             return
+
+        # Add to span attribute since some backend can't read the events
+        if to_span_attributes and event_attributes:
+            span.set_attributes(event_attributes)
 
         span.add_event(event_name, attributes=event_attributes)
 
@@ -275,9 +280,11 @@ class Tracer:
     def start_model_invoke_span(
         self,
         messages: Messages,
-        parent_span: Optional[Span] = None,
-        model_id: Optional[str] = None,
-        custom_trace_attributes: Optional[Mapping[str, AttributeValue]] = None,
+        parent_span: Span | None = None,
+        model_id: str | None = None,
+        custom_trace_attributes: Mapping[str, AttributeValue] | None = None,
+        system_prompt: str | None = None,
+        system_prompt_content: list | None = None,
         **kwargs: Any,
     ) -> Span:
         """Start a new span for a model invocation.
@@ -287,12 +294,14 @@ class Tracer:
             parent_span: Optional parent span to link this span to.
             model_id: Optional identifier for the model being invoked.
             custom_trace_attributes: Optional mapping of custom trace attributes to include in the span.
+            system_prompt: Optional system prompt string provided to the model.
+            system_prompt_content: Optional list of system prompt content blocks.
             **kwargs: Additional attributes to add to the span.
 
         Returns:
             The created span, or None if tracing is not enabled.
         """
-        attributes: Dict[str, AttributeValue] = self._get_common_attributes(operation_name="chat")
+        attributes: dict[str, AttributeValue] = self._get_common_attributes(operation_name="chat")
 
         if custom_trace_attributes:
             attributes.update(custom_trace_attributes)
@@ -304,6 +313,7 @@ class Tracer:
         attributes.update({k: v for k, v in kwargs.items() if isinstance(v, (str, int, float, bool))})
 
         span = self._start_span("chat", parent_span, attributes=attributes, span_kind=trace_api.SpanKind.INTERNAL)
+        self._add_system_prompt_event(span, system_prompt, system_prompt_content)
         self._add_event_messages(span, messages)
 
         return span
@@ -315,7 +325,6 @@ class Tracer:
         usage: Usage,
         metrics: Metrics,
         stop_reason: StopReason,
-        error: Optional[Exception] = None,
     ) -> None:
         """End a model invocation span with results and metrics.
 
@@ -324,10 +333,12 @@ class Tracer:
             message: The message response from the model.
             usage: Token usage information from the model call.
             metrics: Metrics from the model call.
-            stop_reason (StopReason): The reason the model stopped generating.
-            error: Optional exception if the model call failed.
+            stop_reason: The reason the model stopped generating.
         """
-        attributes: Dict[str, AttributeValue] = {
+        if not span or not span.is_recording():
+            return
+
+        attributes: dict[str, AttributeValue] = {
             "gen_ai.usage.prompt_tokens": usage["inputTokens"],
             "gen_ai.usage.input_tokens": usage["inputTokens"],
             "gen_ai.usage.completion_tokens": usage["outputTokens"],
@@ -353,6 +364,7 @@ class Tracer:
                         ]
                     ),
                 },
+                to_span_attributes=self.is_langfuse,
             )
         else:
             self._add_event(
@@ -361,13 +373,13 @@ class Tracer:
                 event_attributes={"finish_reason": str(stop_reason), "message": serialize(message["content"])},
             )
 
-        self._end_span(span, attributes, error)
+        self._end_span(span, attributes)
 
     def start_tool_call_span(
         self,
         tool: ToolUse,
-        parent_span: Optional[Span] = None,
-        custom_trace_attributes: Optional[Mapping[str, AttributeValue]] = None,
+        parent_span: Span | None = None,
+        custom_trace_attributes: Mapping[str, AttributeValue] | None = None,
         **kwargs: Any,
     ) -> Span:
         """Start a new span for a tool call.
@@ -381,7 +393,7 @@ class Tracer:
         Returns:
             The created span, or None if tracing is not enabled.
         """
-        attributes: Dict[str, AttributeValue] = self._get_common_attributes(operation_name="execute_tool")
+        attributes: dict[str, AttributeValue] = self._get_common_attributes(operation_name="execute_tool")
         attributes.update(
             {
                 "gen_ai.tool.name": tool["name"],
@@ -418,6 +430,7 @@ class Tracer:
                         ]
                     )
                 },
+                to_span_attributes=self.is_langfuse,
             )
         else:
             self._add_event(
@@ -432,9 +445,7 @@ class Tracer:
 
         return span
 
-    def end_tool_call_span(
-        self, span: Span, tool_result: Optional[ToolResult], error: Optional[Exception] = None
-    ) -> None:
+    def end_tool_call_span(self, span: Span, tool_result: ToolResult | None, error: Exception | None = None) -> None:
         """End a tool call span with results.
 
         Args:
@@ -442,7 +453,7 @@ class Tracer:
             tool_result: The result from the tool execution.
             error: Optional exception if the tool call failed.
         """
-        attributes: Dict[str, AttributeValue] = {}
+        attributes: dict[str, AttributeValue] = {}
         if tool_result is not None:
             status = tool_result.get("status")
             status_str = str(status) if status is not None else ""
@@ -473,6 +484,7 @@ class Tracer:
                             ]
                         )
                     },
+                    to_span_attributes=self.is_langfuse,
                 )
             else:
                 self._add_event(
@@ -490,10 +502,10 @@ class Tracer:
         self,
         invocation_state: Any,
         messages: Messages,
-        parent_span: Optional[Span] = None,
-        custom_trace_attributes: Optional[Mapping[str, AttributeValue]] = None,
+        parent_span: Span | None = None,
+        custom_trace_attributes: Mapping[str, AttributeValue] | None = None,
         **kwargs: Any,
-    ) -> Optional[Span]:
+    ) -> Span:
         """Start a new span for an event loop cycle.
 
         Args:
@@ -509,9 +521,8 @@ class Tracer:
         event_loop_cycle_id = str(invocation_state.get("event_loop_cycle_id"))
         parent_span = parent_span if parent_span else invocation_state.get("event_loop_parent_span")
 
-        attributes: Dict[str, AttributeValue] = {
-            "event_loop.cycle_id": event_loop_cycle_id,
-        }
+        attributes: dict[str, AttributeValue] = self._get_common_attributes(operation_name="execute_event_loop_cycle")
+        attributes["event_loop.cycle_id"] = event_loop_cycle_id
 
         if custom_trace_attributes:
             attributes.update(custom_trace_attributes)
@@ -532,8 +543,7 @@ class Tracer:
         self,
         span: Span,
         message: Message,
-        tool_result_message: Optional[Message] = None,
-        error: Optional[Exception] = None,
+        tool_result_message: Message | None = None,
     ) -> None:
         """End an event loop cycle span with results.
 
@@ -541,10 +551,11 @@ class Tracer:
             span: The span to end.
             message: The message response from this cycle.
             tool_result_message: Optional tool result message if a tool was called.
-            error: Optional exception if the cycle failed.
         """
-        attributes: Dict[str, AttributeValue] = {}
-        event_attributes: Dict[str, AttributeValue] = {"message": serialize(message["content"])}
+        if not span or not span.is_recording():
+            return
+
+        event_attributes: dict[str, AttributeValue] = {"message": serialize(message["content"])}
 
         if tool_result_message:
             event_attributes["tool.result"] = serialize(tool_result_message["content"])
@@ -563,19 +574,21 @@ class Tracer:
                             ]
                         )
                     },
+                    to_span_attributes=self.is_langfuse,
                 )
             else:
                 self._add_event(span, "gen_ai.choice", event_attributes=event_attributes)
-        self._end_span(span, attributes, error)
+
+        self._end_span(span)
 
     def start_agent_span(
         self,
         messages: Messages,
         agent_name: str,
-        model_id: Optional[str] = None,
-        tools: Optional[list] = None,
-        custom_trace_attributes: Optional[Mapping[str, AttributeValue]] = None,
-        tools_config: Optional[dict] = None,
+        model_id: str | None = None,
+        tools: list | None = None,
+        custom_trace_attributes: Mapping[str, AttributeValue] | None = None,
+        tools_config: dict | None = None,
         **kwargs: Any,
     ) -> Span:
         """Start a new span for an agent invocation.
@@ -592,7 +605,7 @@ class Tracer:
         Returns:
             The created span, or None if tracing is not enabled.
         """
-        attributes: Dict[str, AttributeValue] = self._get_common_attributes(operation_name="invoke_agent")
+        attributes: dict[str, AttributeValue] = self._get_common_attributes(operation_name="invoke_agent")
         attributes.update(
             {
                 "gen_ai.agent.name": agent_name,
@@ -630,8 +643,8 @@ class Tracer:
     def end_agent_span(
         self,
         span: Span,
-        response: Optional[AgentResult] = None,
-        error: Optional[Exception] = None,
+        response: AgentResult | None = None,
+        error: Exception | None = None,
     ) -> None:
         """End an agent span with results and metrics.
 
@@ -640,7 +653,7 @@ class Tracer:
             response: The response from the agent.
             error: Any error that occurred.
         """
-        attributes: Dict[str, AttributeValue] = {}
+        attributes: dict[str, AttributeValue] = {}
 
         if response:
             if self.use_latest_genai_conventions:
@@ -658,6 +671,7 @@ class Tracer:
                             ]
                         )
                     },
+                    to_span_attributes=self.is_langfuse,
                 )
             else:
                 self._add_event(
@@ -667,16 +681,28 @@ class Tracer:
                 )
 
             if hasattr(response, "metrics") and hasattr(response.metrics, "accumulated_usage"):
-                accumulated_usage = response.metrics.accumulated_usage
+                if self.is_langfuse:
+                    attributes.update({"langfuse.observation.type": "span"})
+                if self._use_latest_invocation_tokens:
+                    latest_invocation = response.metrics.latest_agent_invocation
+                    if latest_invocation is None:
+                        logger.warning(
+                            "latest_agent_invocation is None despite _use_latest_invocation_tokens being set"
+                        )
+                        usage: Usage = Usage(inputTokens=0, outputTokens=0, totalTokens=0)
+                    else:
+                        usage = latest_invocation.usage
+                else:
+                    usage = response.metrics.accumulated_usage
                 attributes.update(
                     {
-                        "gen_ai.usage.prompt_tokens": accumulated_usage["inputTokens"],
-                        "gen_ai.usage.completion_tokens": accumulated_usage["outputTokens"],
-                        "gen_ai.usage.input_tokens": accumulated_usage["inputTokens"],
-                        "gen_ai.usage.output_tokens": accumulated_usage["outputTokens"],
-                        "gen_ai.usage.total_tokens": accumulated_usage["totalTokens"],
-                        "gen_ai.usage.cache_read_input_tokens": accumulated_usage.get("cacheReadInputTokens", 0),
-                        "gen_ai.usage.cache_write_input_tokens": accumulated_usage.get("cacheWriteInputTokens", 0),
+                        "gen_ai.usage.prompt_tokens": usage["inputTokens"],
+                        "gen_ai.usage.completion_tokens": usage["outputTokens"],
+                        "gen_ai.usage.input_tokens": usage["inputTokens"],
+                        "gen_ai.usage.output_tokens": usage["outputTokens"],
+                        "gen_ai.usage.total_tokens": usage["totalTokens"],
+                        "gen_ai.usage.cache_read_input_tokens": usage.get("cacheReadInputTokens", 0),
+                        "gen_ai.usage.cache_write_input_tokens": usage.get("cacheWriteInputTokens", 0),
                     }
                 )
 
@@ -698,11 +724,11 @@ class Tracer:
         self,
         task: MultiAgentInput,
         instance: str,
-        custom_trace_attributes: Optional[Mapping[str, AttributeValue]] = None,
+        custom_trace_attributes: Mapping[str, AttributeValue] | None = None,
     ) -> Span:
         """Start a new span for swarm invocation."""
         operation = f"invoke_{instance}"
-        attributes: Dict[str, AttributeValue] = self._get_common_attributes(operation)
+        attributes: dict[str, AttributeValue] = self._get_common_attributes(operation)
         attributes.update(
             {
                 "gen_ai.agent.name": instance,
@@ -724,6 +750,7 @@ class Tracer:
                 span,
                 "gen_ai.client.inference.operation.details",
                 {"gen_ai.input.messages": serialize([{"role": "user", "parts": parts}])},
+                to_span_attributes=self.is_langfuse,
             )
         else:
             self._add_event(
@@ -737,7 +764,7 @@ class Tracer:
     def end_swarm_span(
         self,
         span: Span,
-        result: Optional[str] = None,
+        result: str | None = None,
     ) -> None:
         """End a swarm span with results."""
         if result:
@@ -755,6 +782,7 @@ class Tracer:
                             ]
                         )
                     },
+                    to_span_attributes=self.is_langfuse,
                 )
             else:
                 self._add_event(
@@ -766,7 +794,7 @@ class Tracer:
     def _get_common_attributes(
         self,
         operation_name: str,
-    ) -> Dict[str, AttributeValue]:
+    ) -> dict[str, AttributeValue]:
         """Returns a dictionary of common attributes based on the convention version used.
 
         Args:
@@ -790,6 +818,46 @@ class Tracer:
             )
         return dict(common_attributes)
 
+    def _add_system_prompt_event(
+        self,
+        span: Span,
+        system_prompt: str | None = None,
+        system_prompt_content: list | None = None,
+    ) -> None:
+        """Emit system prompt as a span event per OTel GenAI semantic conventions.
+
+        In legacy mode (v1.36), emits a ``gen_ai.system.message`` event.
+        In latest experimental mode, emits ``gen_ai.system_instructions`` on the
+        ``gen_ai.client.inference.operation.details`` event, since Strands passes
+        system instructions separately from chat history.
+
+        Args:
+            span: The span to add the event to.
+            system_prompt: Optional system prompt string.
+            system_prompt_content: Optional list of system prompt content blocks.
+        """
+        if system_prompt is None and system_prompt_content is None:
+            return
+
+        content_blocks: list[ContentBlock] = (
+            system_prompt_content if system_prompt_content else [{"text": system_prompt or ""}]
+        )
+
+        if self.use_latest_genai_conventions:
+            parts = self._map_content_blocks_to_otel_parts(content_blocks)
+            self._add_event(
+                span,
+                "gen_ai.client.inference.operation.details",
+                {"gen_ai.system_instructions": serialize(parts)},
+                to_span_attributes=self.is_langfuse,
+            )
+        else:
+            self._add_event(
+                span,
+                "gen_ai.system.message",
+                {"content": serialize(content_blocks)},
+            )
+
     def _add_event_messages(self, span: Span, messages: Messages) -> None:
         """Adds messages as event to the provided span based on the current GenAI conventions.
 
@@ -804,7 +872,10 @@ class Tracer:
                     {"role": message["role"], "parts": self._map_content_blocks_to_otel_parts(message["content"])}
                 )
             self._add_event(
-                span, "gen_ai.client.inference.operation.details", {"gen_ai.input.messages": serialize(input_messages)}
+                span,
+                "gen_ai.client.inference.operation.details",
+                {"gen_ai.input.messages": serialize(input_messages)},
+                to_span_attributes=self.is_langfuse,
             )
         else:
             for message in messages:

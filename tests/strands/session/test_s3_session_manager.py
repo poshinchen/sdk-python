@@ -89,6 +89,17 @@ def test_init_s3_session_manager_with_existing_user_agent(mocked_aws, s3_bucket)
     assert "strands-agents" in session_manager.client.meta.config.user_agent_extra
 
 
+def test_empty_prefix_session_roundtrip(mocked_aws, s3_bucket, sample_session, sample_agent):
+    """Test that session data can be written and read back with default empty prefix."""
+    manager = S3SessionManager(session_id="test", bucket=s3_bucket, prefix="", region_name="us-west-2")
+    manager.create_session(sample_session)
+    manager.create_agent(sample_session.session_id, sample_agent)
+
+    result = manager.read_agent(sample_session.session_id, sample_agent.agent_id)
+    assert result is not None
+    assert result.agent_id == sample_agent.agent_id
+
+
 def test_create_session(s3_manager, sample_session):
     """Test creating a session in S3."""
     result = s3_manager.create_session(sample_session)
@@ -282,6 +293,40 @@ def test_list_messages_all(s3_manager, sample_session, sample_agent):
     assert len(result) == 5
 
 
+def test_list_messages_single_message(s3_manager, sample_session, sample_agent):
+    """Test listing all messages from S3."""
+    # Create session and agent
+    s3_manager.create_session(sample_session)
+    s3_manager.create_agent(sample_session.session_id, sample_agent)
+
+    # Create single message
+    message = SessionMessage(
+        {
+            "role": "user",
+            "content": [ContentBlock(text="Single Message")],
+        },
+        0,
+    )
+    s3_manager.create_message(sample_session.session_id, sample_agent.agent_id, message)
+
+    # List all messages
+    result = s3_manager.list_messages(sample_session.session_id, sample_agent.agent_id)
+
+    assert len(result) == 1
+
+
+def test_list_no_messages(s3_manager, sample_session, sample_agent):
+    """Test listing all messages from S3."""
+    # Create session and agent
+    s3_manager.create_session(sample_session)
+    s3_manager.create_agent(sample_session.session_id, sample_agent)
+
+    # List all messages
+    result = s3_manager.list_messages(sample_session.session_id, sample_agent.agent_id)
+
+    assert len(result) == 0
+
+
 def test_list_messages_with_pagination(s3_manager, sample_session, sample_agent):
     """Test listing messages with pagination in S3."""
     # Create session and agent
@@ -333,6 +378,24 @@ def test_update_nonexistent_message(s3_manager, sample_session, sample_agent, sa
     # Update message
     with pytest.raises(SessionException):
         s3_manager.update_message(sample_session.session_id, sample_agent.agent_id, sample_message)
+
+
+@pytest.mark.parametrize(
+    "prefix, expected_path",
+    [
+        ("", "session_test-id/"),
+        ("sessions", "sessions/session_test-id/"),
+        ("sessions/", "sessions/session_test-id/"),
+        ("/sessions", "sessions/session_test-id/"),
+        ("/sessions/", "sessions/session_test-id/"),
+        ("a/b/c", "a/b/c/session_test-id/"),
+        ("a/b/c/", "a/b/c/session_test-id/"),
+    ],
+)
+def test__get_session_path_prefix_normalization(mocked_aws, s3_bucket, prefix, expected_path):
+    """Test that _get_session_path normalizes prefix to avoid leading or double slashes."""
+    manager = S3SessionManager(session_id="test", bucket=s3_bucket, prefix=prefix, region_name="us-west-2")
+    assert manager._get_session_path("test-id") == expected_path
 
 
 @pytest.mark.parametrize(

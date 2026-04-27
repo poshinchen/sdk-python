@@ -57,3 +57,33 @@ logger.warning("Retry limit approaching! attempt=%d max_attempts=%d", attempt, m
 ```
 
 By following these log formatting guidelines, we ensure that logs are both human-readable and machine-parseable, making debugging and monitoring more efficient.
+
+## Type Annotations
+
+### Avoid `Callable` for Extensible Interfaces
+
+Do not use `Callable` for function type annotations that may need additional parameters in the future. `Callable` signatures are fixed and cannot be expanded without breaking existing implementations.
+
+```python
+# Bad: Cannot add parameters later without breaking all existing implementations
+EdgeCondition = Callable[[GraphState], bool]
+
+# Good: Protocol allows adding optional keyword arguments in the future
+class EdgeCondition(Protocol):
+    def __call__(self, state: GraphState, **kwargs: Any) -> bool: ...
+```
+
+Using `Protocol` with `**kwargs` allows the interface to evolve by adding new keyword arguments without breaking existing implementations that don't use them.
+
+### Tool Name References
+
+When comparing against tool names in hooks or plugins, use the tool instance's `tool_name` property instead of hardcoding strings. Tool specs can be modified at runtime via the `AgentTool.tool_spec` setter, so hardcoded names may not match the actual registered name.
+
+```python
+# Good
+if event.tool_use.get("name") == self.my_tool.tool_name:
+    ...
+
+# Bad — fragile if tool name is changed at runtime
+if event.tool_use.get("name") == "my_tool":
+    ...

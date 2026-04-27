@@ -7,7 +7,8 @@ import base64
 import json
 import logging
 import mimetypes
-from typing import Any, AsyncGenerator, Optional, Type, TypedDict, TypeVar, Union, cast
+from collections.abc import AsyncGenerator
+from typing import Any, TypeVar, cast
 
 import anthropic
 from pydantic import BaseModel
@@ -15,12 +16,12 @@ from typing_extensions import Required, Unpack, override
 
 from ..event_loop.streaming import process_stream
 from ..tools.structured_output.structured_output_utils import convert_pydantic_to_tool_spec
-from ..types.content import ContentBlock, Messages
+from ..types.content import ContentBlock, Messages, SystemContentBlock
 from ..types.exceptions import ContextWindowOverflowException, ModelThrottledException
 from ..types.streaming import StreamEvent
 from ..types.tools import ToolChoice, ToolChoiceToolDict, ToolSpec
-from ._validation import validate_config_keys
-from .model import Model
+from ._validation import _has_location_source, validate_config_keys
+from .model import BaseModelConfig, Model
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class AnthropicModel(Model):
         "input and output tokens exceed your context limit",
     }
 
-    class AnthropicConfig(TypedDict, total=False):
+    class AnthropicConfig(BaseModelConfig, total=False):
         """Configuration options for Anthropic models.
 
         Attributes:
@@ -59,9 +60,9 @@ class AnthropicModel(Model):
 
         max_tokens: Required[int]
         model_id: Required[str]
-        params: Optional[dict[str, Any]]
+        params: dict[str, Any] | None
 
-    def __init__(self, *, client_args: Optional[dict[str, Any]] = None, **model_config: Unpack[AnthropicConfig]):
+    def __init__(self, *, client_args: dict[str, Any] | None = None, **model_config: Unpack[AnthropicConfig]):
         """Initialize provider instance.
 
         Args:
@@ -188,6 +189,11 @@ class AnthropicModel(Model):
                     formatted_contents[-1]["cache_control"] = {"type": "ephemeral"}
                     continue
 
+                # Check for location sources in image, document, or video content
+                if _has_location_source(content):
+                    logger.warning("Location sources are not supported by Anthropic | skipping content block")
+                    continue
+
                 formatted_contents.append(self._format_request_message_content(content))
 
             if formatted_contents:
@@ -198,8 +204,8 @@ class AnthropicModel(Model):
     def format_request(
         self,
         messages: Messages,
-        tool_specs: Optional[list[ToolSpec]] = None,
-        system_prompt: Optional[str] = None,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
         tool_choice: ToolChoice | None = None,
     ) -> dict[str, Any]:
         """Format an Anthropic streaming request.
@@ -366,11 +372,59 @@ class AnthropicModel(Model):
                 raise RuntimeError(f"event_type=<{event['type']} | unknown type")
 
     @override
+    async def count_tokens(
+        self,
+        messages: Messages,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
+        system_prompt_content: list[SystemContentBlock] | None = None,
+    ) -> int:
+        """Count tokens using Anthropic's native count_tokens API.
+
+        Uses the same message format as the Messages API to get accurate token counts
+        directly from the Anthropic service.
+
+        Args:
+            messages: List of message objects to count tokens for.
+            tool_specs: List of tool specifications to include in the count.
+            system_prompt: Plain string system prompt. Ignored if system_prompt_content is provided.
+            system_prompt_content: Structured system prompt content blocks.
+
+        Returns:
+            Total input token count.
+        """
+        try:
+            # system_prompt_content is not used; this provider only accepts system_prompt as a plain string,
+            # matching the behavior of stream(). The caller always provides system_prompt alongside
+            # system_prompt_content, so the plain string is always available.
+            request = self.format_request(messages, tool_specs, system_prompt)
+            # Keep only fields accepted by count_tokens; strip inference params (max_tokens, temperature, etc.)
+            count_tokens_fields = {"model", "messages", "tools", "tool_choice", "system"}
+            request = {k: request[k] for k in request.keys() & count_tokens_fields}
+
+            response = await self.client.messages.count_tokens(**request)
+            total_tokens: int = response.input_tokens
+
+            logger.debug(
+                "model_id=<%s>, total_tokens=<%d> | native token count",
+                self.config["model_id"],
+                total_tokens,
+            )
+            return total_tokens
+        except Exception as e:
+            logger.warning(
+                "model_id=<%s>, error=<%s> | native token counting failed, falling back to estimation",
+                self.config["model_id"],
+                e,
+            )
+            return await super().count_tokens(messages, tool_specs, system_prompt, system_prompt_content)
+
+    @override
     async def stream(
         self,
         messages: Messages,
-        tool_specs: Optional[list[ToolSpec]] = None,
-        system_prompt: Optional[str] = None,
+        tool_specs: list[ToolSpec] | None = None,
+        system_prompt: str | None = None,
         *,
         tool_choice: ToolChoice | None = None,
         **kwargs: Any,
@@ -401,10 +455,24 @@ class AnthropicModel(Model):
                 logger.debug("got response from model")
                 async for event in stream:
                     if event.type in AnthropicModel.EVENT_TYPES:
-                        yield self.format_chunk(event.model_dump())
+                        if event.type == "message_stop":
+                            # Build dict directly to avoid Pydantic serialization warnings
+                            # when the message contains ParsedTextBlock objects (issue #1746)
+                            yield self.format_chunk(
+                                {
+                                    "type": "message_stop",
+                                    "message": {"stop_reason": event.message.stop_reason},
+                                }
+                            )
+                        else:
+                            yield self.format_chunk(event.model_dump())
 
-                usage = event.message.usage  # type: ignore
-                yield self.format_chunk({"type": "metadata", "usage": usage.model_dump()})
+                try:
+                    message_snapshot = await stream.get_final_message()
+                except AssertionError as e:
+                    logger.warning("error=<%s> | failed to retrieve message snapshot, usage metadata unavailable", e)
+                else:
+                    yield self.format_chunk({"type": "metadata", "usage": message_snapshot.usage.model_dump()})
 
         except anthropic.RateLimitError as error:
             raise ModelThrottledException(str(error)) from error
@@ -419,8 +487,8 @@ class AnthropicModel(Model):
 
     @override
     async def structured_output(
-        self, output_model: Type[T], prompt: Messages, system_prompt: Optional[str] = None, **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Union[T, Any]], None]:
+        self, output_model: type[T], prompt: Messages, system_prompt: str | None = None, **kwargs: Any
+    ) -> AsyncGenerator[dict[str, T | Any], None]:
         """Get structured output from the model.
 
         Args:

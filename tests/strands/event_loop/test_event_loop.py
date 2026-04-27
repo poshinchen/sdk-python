@@ -1,12 +1,18 @@
+import asyncio
 import concurrent
+import threading
 import unittest.mock
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import strands
 import strands.telemetry
 from strands import Agent
+from strands.event_loop._retry import ModelRetryStrategy
 from strands.hooks import (
     AfterModelCallEvent,
     BeforeModelCallEvent,
@@ -16,6 +22,7 @@ from strands.hooks import (
 )
 from strands.interrupt import Interrupt, _InterruptState
 from strands.telemetry.metrics import EventLoopMetrics
+from strands.telemetry.tracer import Tracer
 from strands.tools.executors import SequentialToolExecutor
 from strands.tools.registry import ToolRegistry
 from strands.types._events import EventLoopStopEvent
@@ -31,9 +38,7 @@ from tests.fixtures.mocked_model_provider import MockedModelProvider
 
 @pytest.fixture
 def mock_sleep():
-    with unittest.mock.patch.object(
-        strands.event_loop.event_loop.asyncio, "sleep", new_callable=unittest.mock.AsyncMock
-    ) as mock:
+    with patch.object(strands.event_loop._retry.asyncio, "sleep", new_callable=AsyncMock) as mock:
         yield mock
 
 
@@ -116,7 +121,11 @@ def tool_stream(tool):
 
 @pytest.fixture
 def hook_registry():
-    return HookRegistry()
+    registry = HookRegistry()
+    # Register default retry strategy
+    retry_strategy = ModelRetryStrategy()
+    retry_strategy.register_hooks(registry)
+    return registry
 
 
 @pytest.fixture
@@ -142,10 +151,14 @@ def agent(model, system_prompt, messages, tool_registry, thread_pool, hook_regis
     mock.tool_registry = tool_registry
     mock.thread_pool = thread_pool
     mock.event_loop_metrics = EventLoopMetrics()
+    mock.event_loop_metrics.reset_usage_metrics()
     mock.hooks = hook_registry
     mock.tool_executor = tool_executor
     mock._interrupt_state = _InterruptState()
+    mock._cancel_signal = threading.Event()
+    mock._model_state = {}
     mock.trace_attributes = {}
+    mock.retry_strategy = ModelRetryStrategy()
 
     return mock
 
@@ -180,7 +193,7 @@ async def test_event_loop_cycle_text_response(
     tru_stop_reason, tru_message, _, tru_request_state, _, _ = events[-1]["stop"]
 
     exp_stop_reason = "end_turn"
-    exp_message = {"role": "assistant", "content": [{"text": "test text"}]}
+    exp_message = {"role": "assistant", "content": [{"text": "test text"}], "metadata": ANY}
     exp_request_state = {}
 
     assert tru_stop_reason == exp_stop_reason and tru_message == exp_message and tru_request_state == exp_request_state
@@ -212,7 +225,7 @@ async def test_event_loop_cycle_text_response_throttling(
     tru_stop_reason, tru_message, _, tru_request_state, _, _ = events[-1]["stop"]
 
     exp_stop_reason = "end_turn"
-    exp_message = {"role": "assistant", "content": [{"text": "test text"}]}
+    exp_message = {"role": "assistant", "content": [{"text": "test text"}], "metadata": ANY}
     exp_request_state = {}
 
     assert tru_stop_reason == exp_stop_reason and tru_message == exp_message and tru_request_state == exp_request_state
@@ -251,7 +264,7 @@ async def test_event_loop_cycle_exponential_backoff(
 
     # Verify the final response
     assert tru_stop_reason == "end_turn"
-    assert tru_message == {"role": "assistant", "content": [{"text": "test text"}]}
+    assert tru_message == {"role": "assistant", "content": [{"text": "test text"}], "metadata": ANY}
     assert tru_request_state == {}
 
     # Verify that sleep was called with increasing delays
@@ -341,7 +354,7 @@ async def test_event_loop_cycle_tool_result(
     tru_stop_reason, tru_message, _, tru_request_state, _, _ = events[-1]["stop"]
 
     exp_stop_reason = "end_turn"
-    exp_message = {"role": "assistant", "content": [{"text": "test text"}]}
+    exp_message = {"role": "assistant", "content": [{"text": "test text"}], "metadata": ANY}
     exp_request_state = {}
 
     assert tru_stop_reason == exp_stop_reason and tru_message == exp_message and tru_request_state == exp_request_state
@@ -376,12 +389,13 @@ async def test_event_loop_cycle_tool_result(
                     },
                 ],
             },
-            {"role": "assistant", "content": [{"text": "test text"}]},
         ],
         tool_registry.get_all_tool_specs(),
         "p1",
         tool_choice=None,
         system_prompt_content=unittest.mock.ANY,
+        invocation_state=unittest.mock.ANY,
+        model_state=unittest.mock.ANY,
     )
 
 
@@ -469,6 +483,7 @@ async def test_event_loop_cycle_stop(
                 }
             }
         ],
+        "metadata": ANY,
     }
     exp_request_state = {"stop_event_loop": True}
 
@@ -538,6 +553,9 @@ async def test_event_loop_cycle_creates_spans(
     mock_get_tracer.assert_called_once()
     mock_tracer.start_event_loop_cycle_span.assert_called_once()
     mock_tracer.start_model_invoke_span.assert_called_once()
+    call_kwargs = mock_tracer.start_model_invoke_span.call_args[1]
+    assert call_kwargs["system_prompt"] == agent.system_prompt
+    assert call_kwargs["system_prompt_content"] == agent._system_prompt_content
     mock_tracer.end_model_invoke_span.assert_called_once()
     mock_tracer.end_event_loop_cycle_span.assert_called_once()
 
@@ -569,8 +587,13 @@ async def test_event_loop_tracing_with_model_error(
         )
         await alist(stream)
 
-    # Verify error handling span methods were called
-    mock_tracer.end_span_with_error.assert_called_once_with(model_span, "Input too long", model.stream.side_effect)
+    assert mock_tracer.end_span_with_error.call_count == 2
+    mock_tracer.end_span_with_error.assert_has_calls(
+        [
+            call(model_span, "Input too long", model.stream.side_effect),
+            call(cycle_span, "Input too long", model.stream.side_effect),
+        ]
+    )
 
 
 @pytest.mark.asyncio
@@ -662,6 +685,53 @@ async def test_event_loop_tracing_with_tool_execution(
     assert mock_tracer.end_model_invoke_span.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_event_loop_cycle_closes_cycle_span_before_recursive_cycle(
+    agent,
+    model,
+    tool_stream,
+    agenerator,
+    alist,
+):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    tracer = Tracer()
+    tracer.tracer_provider = provider
+    tracer.tracer = provider.get_tracer(tracer.service_name)
+
+    async def delayed_text_stream():
+        yield {"contentBlockDelta": {"delta": {"text": "test text"}}}
+        await asyncio.sleep(0.05)
+        yield {"contentBlockStop": {}}
+
+    agent.trace_span = None
+    agent._system_prompt_content = None
+    model.config = {"model_id": "test-model"}
+    model.stream.side_effect = [
+        agenerator(tool_stream),
+        delayed_text_stream(),
+    ]
+
+    with patch("strands.event_loop.event_loop.get_tracer", return_value=tracer):
+        stream = strands.event_loop.event_loop.event_loop_cycle(
+            agent=agent,
+            invocation_state={},
+        )
+        await alist(stream)
+
+    provider.force_flush()
+    cycle_spans = sorted(
+        [span for span in exporter.get_finished_spans() if span.name == "execute_event_loop_cycle"],
+        key=lambda span: span.start_time,
+    )
+
+    assert len(cycle_spans) == 2
+    assert cycle_spans[0].end_time <= cycle_spans[1].start_time
+    assert cycle_spans[0].end_time < cycle_spans[1].end_time
+
+
 @patch("strands.event_loop.event_loop.get_tracer")
 @pytest.mark.asyncio
 async def test_event_loop_tracing_with_throttling_exception(
@@ -691,14 +761,13 @@ async def test_event_loop_tracing_with_throttling_exception(
     ]
 
     # Mock the time.sleep function to speed up the test
-    with patch("strands.event_loop.event_loop.asyncio.sleep", new_callable=unittest.mock.AsyncMock):
+    with patch.object(asyncio, "sleep", new_callable=unittest.mock.AsyncMock):
         stream = strands.event_loop.event_loop.event_loop_cycle(
             agent=agent,
             invocation_state={},
         )
         await alist(stream)
 
-    # Verify error span was created for the throttling exception
     assert mock_tracer.end_span_with_error.call_count == 1
     # Verify span was created for the successful retry
     assert mock_tracer.start_model_invoke_span.call_count == 2
@@ -754,6 +823,7 @@ async def test_request_state_initialization(alist):
     mock_agent = MagicMock()
     # not setting this to False results in endless recursion
     mock_agent._interrupt_state.activated = False
+    mock_agent._cancel_signal = threading.Event()
     mock_agent.event_loop_metrics.start_cycle.return_value = (0, MagicMock())
     mock_agent.hooks.invoke_callbacks_async = AsyncMock()
 
@@ -853,30 +923,37 @@ async def test_event_loop_cycle_exception_model_hooks(mock_sleep, agent, model, 
     assert count == 9
 
     # 1st call - throttled
-    assert next(events) == BeforeModelCallEvent(agent=agent)
-    assert next(events) == AfterModelCallEvent(agent=agent, stop_response=None, exception=exception)
+    assert next(events) == BeforeModelCallEvent(agent=agent, invocation_state=ANY)
+    expected_after = AfterModelCallEvent(agent=agent, invocation_state=ANY, stop_response=None, exception=exception)
+    expected_after.retry = True
+    assert next(events) == expected_after
 
     # 2nd call - throttled
-    assert next(events) == BeforeModelCallEvent(agent=agent)
-    assert next(events) == AfterModelCallEvent(agent=agent, stop_response=None, exception=exception)
+    assert next(events) == BeforeModelCallEvent(agent=agent, invocation_state=ANY)
+    expected_after = AfterModelCallEvent(agent=agent, invocation_state=ANY, stop_response=None, exception=exception)
+    expected_after.retry = True
+    assert next(events) == expected_after
 
     # 3rd call - throttled
-    assert next(events) == BeforeModelCallEvent(agent=agent)
-    assert next(events) == AfterModelCallEvent(agent=agent, stop_response=None, exception=exception)
+    assert next(events) == BeforeModelCallEvent(agent=agent, invocation_state=ANY)
+    expected_after = AfterModelCallEvent(agent=agent, invocation_state=ANY, stop_response=None, exception=exception)
+    expected_after.retry = True
+    assert next(events) == expected_after
 
     # 4th call - successful
-    assert next(events) == BeforeModelCallEvent(agent=agent)
+    assert next(events) == BeforeModelCallEvent(agent=agent, invocation_state=ANY)
     assert next(events) == AfterModelCallEvent(
         agent=agent,
+        invocation_state=ANY,
         stop_response=AfterModelCallEvent.ModelStopResponse(
-            message={"content": [{"text": "test text"}], "role": "assistant"}, stop_reason="end_turn"
+            message={"content": [{"text": "test text"}], "role": "assistant", "metadata": ANY}, stop_reason="end_turn"
         ),
         exception=None,
     )
 
     # Final message
     assert next(events) == MessageAddedEvent(
-        agent=agent, message={"content": [{"text": "test text"}], "role": "assistant"}
+        agent=agent, message={"content": [{"text": "test text"}], "role": "assistant", "metadata": ANY}
     )
 
 
@@ -920,6 +997,7 @@ async def test_event_loop_cycle_interrupt(agent, model, tool_stream, agenerator,
                     },
                 ],
                 "role": "assistant",
+                "metadata": ANY,
             },
         },
         "interrupts": {
@@ -1054,7 +1132,7 @@ async def test_invalid_tool_names_adds_tool_uses(agent, model, alist):
     # ensure that we got end_turn and not tool_use
     assert events[-1] == EventLoopStopEvent(
         stop_reason="end_turn",
-        message={"content": [{"text": "I invoked a tool!"}], "role": "assistant"},
+        message={"content": [{"text": "I invoked a tool!"}], "role": "assistant", "metadata": ANY},
         metrics=ANY,
         request_state={},
     )
@@ -1072,3 +1150,51 @@ async def test_invalid_tool_names_adds_tool_uses(agent, model, alist):
         ],
         "role": "user",
     }
+
+
+@pytest.mark.asyncio
+async def test_event_loop_metrics_recorded_before_recursion(
+    agent,
+    model,
+    tool,
+    agenerator,
+    alist,
+):
+    model.stream.side_effect = [
+        agenerator(
+            [
+                {
+                    "contentBlockStart": {
+                        "start": {
+                            "toolUse": {
+                                "toolUseId": "t1",
+                                "name": tool.tool_spec["name"],
+                            },
+                        },
+                    },
+                },
+                {"contentBlockStop": {}},
+                {"messageStop": {"stopReason": "tool_use"}},
+            ]
+        ),
+        agenerator(
+            [
+                {"contentBlockDelta": {"delta": {"text": "test text"}}},
+                {"contentBlockStop": {}},
+            ]
+        ),
+    ]
+
+    with unittest.mock.patch.object(agent.event_loop_metrics, "end_cycle") as mock_end_cycle:
+        stream = strands.event_loop.event_loop.event_loop_cycle(
+            agent=agent,
+            invocation_state={"request_state": {}},
+        )
+        events = await alist(stream)
+
+        # Verify end_cycle was called once for tool cycle, once for text cycle
+        assert mock_end_cycle.call_count == 2
+
+        # Verify the event loop completed successfully
+        tru_stop_reason, _, _, _, _, _ = events[-1]["stop"]
+        assert tru_stop_reason == "end_turn"
