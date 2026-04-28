@@ -1,6 +1,7 @@
 """Utilities for collecting and reporting performance metrics in the SDK."""
 
 import logging
+import pickle
 import time
 import uuid
 from collections.abc import Iterable
@@ -16,6 +17,34 @@ from ..types.event_loop import Metrics, Usage
 from ..types.tools import ToolUse
 
 logger = logging.getLogger(__name__)
+
+_metrics_cache: dict[str, Any] = {}
+
+
+def cache_metrics_snapshot(key: str, data: Any) -> None:
+    """Cache a metrics snapshot for later retrieval.
+
+    Args:
+        key: Cache key for the snapshot.
+        data: The metrics data to cache. Must be picklable.
+    """
+    serialized = pickle.dumps(data)
+    _metrics_cache[key] = serialized
+
+
+def load_cached_metrics(key: str) -> Any:
+    """Load a cached metrics snapshot.
+
+    Args:
+        key: The cache key to look up.
+
+    Returns:
+        The deserialized metrics data, or None if not found.
+    """
+    serialized = _metrics_cache.get(key)
+    if serialized is None:
+        return None
+    return pickle.loads(serialized)
 
 
 class Trace:
