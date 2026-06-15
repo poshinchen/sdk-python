@@ -218,6 +218,7 @@ sidebar:
           - label: Remote Trace Providers
             items:
               - docs/user-guide/evals-sdk/how-to/trace_providers
+          - docs/user-guide/evals-sdk/cli
           - label: How-To Guides
             items:
               - docs/user-guide/evals-sdk/how-to/eval_task
