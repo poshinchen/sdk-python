@@ -248,6 +248,8 @@ When using `StrandsInMemorySessionMapper`, you **must** include session ID trace
 :::
 
 ```python
+import asyncio
+
 from strands import Agent
 from strands_evals import Case, Experiment, ActorSimulator
 from strands_evals.evaluators import HelpfulnessEvaluator, GoalSuccessRateEvaluator
@@ -291,7 +293,11 @@ evaluators = [
 ]
 
 experiment = Experiment(cases=test_cases, evaluators=evaluators)
-report = experiment.run_evaluations(task_function)
+
+async def main():
+    report = await experiment.run_evaluations_async(task_function)
+
+asyncio.run(main())
 ```
 
 ## Best Practices

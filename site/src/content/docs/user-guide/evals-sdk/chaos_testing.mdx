@@ -110,6 +110,8 @@ def task_function(case: ChaosCase):
 ### Run chaos experiment
 
 ```python
+import asyncio
+
 from strands_evals.chaos import ChaosExperiment
 from strands_evals.evaluators import GoalSuccessRateEvaluator
 
@@ -117,8 +119,12 @@ experiment = ChaosExperiment(
     cases=chaos_cases,
     evaluators=[GoalSuccessRateEvaluator()]
 )
-report = experiment.run_evaluations(task=task_function)
-report.run_display()
+
+async def main():
+    report = await experiment.run_evaluations_async(task=task_function, max_workers=1)
+    report.run_display()
+
+asyncio.run(main())
 ```
 
 ## Effect Types
@@ -269,8 +275,12 @@ experiment = ChaosExperiment(
     cases=chaos_cases,
     evaluators=[GoalSuccessRateEvaluator()]
 )
-report = experiment.run_evaluations(task=task_function)
-report.run_display()
+
+async def main():
+    report = await experiment.run_evaluations_async(task=task_function, max_workers=1)
+    report.run_display()
+
+asyncio.run(main())
 ```
 
 ### Chaos Testing vs Simulators
@@ -317,7 +327,7 @@ from strands_evals.chaos import ChaosCase, ChaosExperiment, ChaosPlugin
 from strands_evals.eval_task_handler import TracedHandler, eval_task
 from strands_evals.evaluators.chaos import PartialCompletionEvaluator
 
-def compare_agents_under_chaos(chaos_cases, configs):
+async def compare_agents_under_chaos(chaos_cases, configs):
     """Compare how different agent configs handle the same failures."""
     results = {}
 
@@ -337,7 +347,7 @@ def compare_agents_under_chaos(chaos_cases, configs):
             cases=chaos_cases,
             evaluators=[PartialCompletionEvaluator()]
         )
-        report = experiment.run_evaluations(task=make_task(system_prompt))
+        report = await experiment.run_evaluations_async(task=make_task(system_prompt), max_workers=1)
         results[config_name] = report
 
     return results
