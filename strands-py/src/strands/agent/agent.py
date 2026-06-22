@@ -837,7 +837,7 @@ class Agent(AgentBase):
         warnings.warn(
             "Agent.structured_output method is deprecated."
             " You should pass in `structured_output_model` directly into the agent invocation."
-            " see: https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/structured-output/",
+            " see: https://strandsagents.com/docs/user-guide/concepts/agents/structured-output/",
             category=DeprecationWarning,
             stacklevel=2,
         )
@@ -868,7 +868,7 @@ class Agent(AgentBase):
         warnings.warn(
             "Agent.structured_output_async method is deprecated."
             " You should pass in `structured_output_model` directly into the agent invocation."
-            " see: https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/structured-output/",
+            " see: https://strandsagents.com/docs/user-guide/concepts/agents/structured-output/",
             category=DeprecationWarning,
             stacklevel=2,
         )
@@ -1017,7 +1017,7 @@ class Agent(AgentBase):
             agent.add_hook(multi_handler, [BeforeModelCallEvent, AfterModelCallEvent])
             ```
         Docs:
-            https://strandsagents.com/latest/documentation/docs/user-guide/concepts/agents/hooks/
+            https://strandsagents.com/docs/user-guide/concepts/agents/hooks/
         """
         self.hooks.add_callback(event_type, callback, order=order)
 
