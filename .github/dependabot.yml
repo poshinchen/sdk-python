@@ -10,6 +10,7 @@ updates:
       - "python"
     commit-message:
       prefix: "ci(python)"
+    versioning-strategy: increase-if-necessary
     groups:
       dev-dependencies:
         patterns:
