@@ -123,6 +123,16 @@ class ConcurrencyException(Exception):
     pass
 
 
+class IdempotencyAbortedError(Exception):
+    """Exception raised to duplicate invocations when the primary invocation was aborted.
+
+    When a caller provides an idempotency_token and another invocation with the same token
+    is already in-flight, the duplicate waits for the primary to complete. If the primary
+    is aborted before producing a result (e.g. it lost a lock race or was cancelled),
+    this exception is raised to all waiting duplicates.
+    """
+
+
 class CheckpointException(Exception):
     """Exception raised when checkpoint operations fail (e.g., incompatible schema version)."""
 
