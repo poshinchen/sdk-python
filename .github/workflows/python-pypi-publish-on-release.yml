@@ -1,24 +1,41 @@
-name: "Python: Publish Package"
+name: "Python: Publish Package (manual fallback)"
+
+# ⚠️ Manual fallback — prefer release.yml.
+#
+# release.yml is the primary release path: it pins a SHA, builds + inspects
+# the wheel, drafts notes, requires 2 reviewer approvals, publishes to PyPI,
+# then creates the GitHub release. This workflow does NOT replicate that gate
+# — it just rebuilds from a tag and uploads.
+#
+# Use this only when release.yml is broken (or already half-ran) and a
+# maintainer needs to hand-publish a tag that's already been pushed. Because
+# it's `workflow_dispatch`-only, it requires repo write access to invoke; it
+# is intentionally NOT triggered by `release: published` (that path is owned
+# by release.yml and the dual-firing would break the artifact-identity
+# guarantee).
 
 on:
-  release:
-    types:
-      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish, e.g. python/v1.4.0 (must already exist)'
+        required: true
+        type: string
 
 jobs:
   call-test-lint:
-    if: startsWith(github.event.release.tag_name, 'python/v1.')
+    if: startsWith(inputs.tag, 'python/v1.')
     uses: ./.github/workflows/python-test-lint.yml
     permissions:
       contents: read
     with:
-      ref: ${{ github.event.release.target_commitish }}
+      ref: ${{ inputs.tag }}
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   build:
     name: Build distribution
-    if: startsWith(github.event.release.tag_name, 'python/v1.')
+    if: startsWith(inputs.tag, 'python/v1.')
     permissions:
       contents: read
     needs:
@@ -31,6 +48,7 @@ jobs:
     steps:
     - uses: actions/checkout@v7
       with:
+        ref: ${{ inputs.tag }}
         persist-credentials: false
         fetch-depth: 0
 

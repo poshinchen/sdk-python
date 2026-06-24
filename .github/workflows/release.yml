@@ -1,0 +1,755 @@
+name: "Release"
+
+# Manually-triggered release pipeline. Steps:
+#   1. Resolve main to a SHA. Every downstream job uses that SHA — never
+#      `main`. This keeps the pipeline deterministic if main moves while the
+#      release is in flight.
+#   2. Validate the maintainer-supplied version against the previous tag.
+#   3. Run lint + unit + integration tests, security audit, and the wheel /
+#      pack smoke test against the pinned SHA. The smoke test uploads the
+#      built artifact.
+#   4. Inspect the built artifact (twine check, list tarball contents) and
+#      re-upload it as the verified bundle.
+#   5. Draft AI-generated release notes (Bedrock). Falls back to a
+#      `git shortlog` summary if Bedrock is unavailable — releases are not
+#      blocked on AI availability.
+#   6. Pause on a deployment environment that requires 2 reviewer approvals.
+#      Reviewers read the rendered notes from the run summary, download the
+#      verified artifact to smoke-test locally, then approve or reject.
+#   7. Create the GitHub release: `gh release create --target <sha>` tags
+#      the pinned SHA and attaches the drafted notes. Done BEFORE publish so
+#      the tag is the source of truth — a publish failure leaves the tag
+#      intact, and only the publish step needs re-running.
+#   8. Publish the verified artifact to PyPI / NPM via OIDC trusted
+#      publishing. This is the LAST gated step — see the fork-testability
+#      invariant below.
+#
+# ── Fork-testability invariant ─────────────────────────────────────────────
+# Registry publish (`publish-pypi` / `publish-npm`) is the only step that
+# requires PyPI / NPM to trust this repo as a trusted publisher. Everything
+# before it builds, verifies, and uploads the artifact using only generic
+# compute. A contributor can fork the repo, sync tags, run this workflow
+# with `dry_run: false` on their fork, and watch the entire pipeline run —
+# only `publish-pypi` / `publish-npm` will fail (PyPI / NPM reject the
+# fork's OIDC token because the fork isn't the registered publisher). The
+# build artifact is available on the run page for local install + smoke
+# testing.
+#
+# This is how we iterate on release.yml itself. To test on a fork:
+#   1. `git fetch upstream --tags && git push origin --tags`   (one-time)
+#   2. Actions → Release → Run workflow on your fork, dry_run: false
+#   3. Expected: green up to publish, red at publish, skipped after.
+#
+# By default the integ tests are SKIPPED on forks so a fork user without AWS
+# credentials isn't blocked at the integ step. If your fork has its own
+# AWS_ROLE_ARN + STRANDS_INTEG_TEST_ROLE secrets configured, set
+# `run_integ_on_fork: true` to exercise the integ tests too.
+#
+# Do NOT add any step AFTER publish that requires upstream-only auth — that
+# would mask the fork-fail signal at publish and make the fork run a less
+# useful dry run.
+#
+# Setup (one-time, per package):
+#   - Create environment `release-<package>` in repo settings with 2 required
+#     reviewers and `Deployment branches` restricted to `main` only.
+#   - Create environments `pypi` and `npm` and register this workflow as a
+#     trusted publisher on pypi.org and npmjs.com respectively. The trusted
+#     publisher config MUST point at `release.yml`, not at
+#     `python-pypi-publish-on-release.yml` / `typescript-npm-publish-on-release.yml`
+#     (those are workflow_dispatch-only fallbacks now).
+#   - AWS_ROLE_ARN secret must have bedrock:InvokeModel permission (already
+#     used by strands-command.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to release'
+        required: true
+        type: choice
+        options:
+          - python
+          - typescript
+      version:
+        description: 'Explicit version, e.g. 1.4.0 (no leading v, no prefix).'
+        required: true
+        type: string
+      dry_run:
+        description: 'Skip approval + publish + GitHub release creation. Set false to actually release (or to fork-test the publish path).'
+        required: true
+        default: true
+        type: boolean
+      run_integ_on_fork:
+        description: 'When running on a fork: also run integration tests. Requires the fork to have its own AWS_ROLE_ARN + STRANDS_INTEG_TEST_ROLE secrets and trust relationships configured. Has no effect on the upstream repo (integ always runs there).'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  # Per-package serialization. Two python releases queue (cancel-in-progress:
+  # false), but a python release and a typescript release can run in parallel.
+  group: release-${{ inputs.package }}
+  cancel-in-progress: false
+
+jobs:
+  scan-commits:
+    name: Resolve SHA and validate version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_sha: ${{ steps.scan.outputs.release_sha }}
+      prev_tag: ${{ steps.scan.outputs.prev_tag }}
+      prev_version: ${{ steps.scan.outputs.prev_version }}
+      new_tag: ${{ steps.scan.outputs.new_tag }}
+      commit_count: ${{ steps.scan.outputs.commit_count }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve SHA, find previous tag, validate version
+        id: scan
+        env:
+          PACKAGE: ${{ inputs.package }}
+          NEW_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # 1. Validate the typed version
+          if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '$NEW_VERSION' is not a bare semver (expected MAJOR.MINOR.PATCH, no leading 'v')."
+            exit 1
+          fi
+
+          # python-pypi-publish-on-release.yml's fallback path is gated on
+          # tags starting with `python/v1.`, so a `python/v2+` release here
+          # would be unrunnable through the fallback. Reject loudly until
+          # that gate is widened.
+          if [ "$PACKAGE" = "python" ]; then
+            MAJOR="${NEW_VERSION%%.*}"
+            if [ "$MAJOR" -ge 2 ]; then
+              echo "::error::python major $MAJOR is not supported by python-pypi-publish-on-release.yml fallback (gated on python/v1.*). Widen that gate before releasing python/v${MAJOR}.x."
+              exit 1
+            fi
+          fi
+
+          # 2. Pick tag prefix and resolve previous tag
+          if [ "$PACKAGE" = "python" ]; then
+            TAG_PREFIX="python/v"
+          else
+            TAG_PREFIX="typescript/v"
+          fi
+          PREV_TAG=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n1)
+          if [ -z "$PREV_TAG" ]; then
+            echo "::error::No prior tag found matching ${TAG_PREFIX}* — refusing to release without a baseline. (On a fork: run \`git fetch upstream --tags && git push origin --tags\` first.)"
+            exit 1
+          fi
+          PREV_VERSION="${PREV_TAG#"${TAG_PREFIX}"}"
+          NEW_TAG="${TAG_PREFIX}${NEW_VERSION}"
+
+          # 3. Reject duplicate / non-monotonic versions
+          if [ "$NEW_VERSION" = "$PREV_VERSION" ]; then
+            echo "::error::version $NEW_VERSION matches existing tag $PREV_TAG."
+            exit 1
+          fi
+          HIGHER=$(printf '%s\n%s\n' "$PREV_VERSION" "$NEW_VERSION" | sort -V | tail -n1)
+          if [ "$HIGHER" != "$NEW_VERSION" ]; then
+            echo "::error::version $NEW_VERSION is not greater than previous $PREV_VERSION."
+            exit 1
+          fi
+          if git rev-parse --verify "refs/tags/$NEW_TAG" >/dev/null 2>&1; then
+            echo "::error::tag $NEW_TAG already exists."
+            exit 1
+          fi
+
+          # 4. Pin main to a specific SHA. Everything downstream uses this.
+          RELEASE_SHA=$(git rev-parse origin/main)
+
+          # 5. Count commits since prev tag (purely informational)
+          COUNT=$(git rev-list --count "$PREV_TAG..$RELEASE_SHA")
+          if [ "$COUNT" = "0" ]; then
+            echo "::error::no commits between $PREV_TAG and $RELEASE_SHA — nothing to release."
+            exit 1
+          fi
+
+          {
+            echo "release_sha=$RELEASE_SHA"
+            echo "prev_tag=$PREV_TAG"
+            echo "prev_version=$PREV_VERSION"
+            echo "new_tag=$NEW_TAG"
+            echo "commit_count=$COUNT"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release scan"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Package | \`$PACKAGE\` |"
+            echo "| Previous tag | \`$PREV_TAG\` (v$PREV_VERSION) |"
+            echo "| Proposed tag | \`$NEW_TAG\` (v$NEW_VERSION) |"
+            echo "| Pinned SHA | \`$RELEASE_SHA\` |"
+            echo "| Commits since prev tag | **$COUNT** |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Lint + unit-test gates ─────────────────────────────────────────────
+  # Parity with the (now-fallback) publish-on-release workflows: they ran
+  # test-lint / ts-check / ts-test before publishing; we run them here too
+  # so the in-pipeline publish has the same safety net.
+  py-test-lint:
+    name: Python lint + unit tests
+    needs: scan-commits
+    if: inputs.package == 'python'
+    uses: ./.github/workflows/python-test-lint.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  ts-check:
+    name: TypeScript code quality
+    needs: scan-commits
+    if: inputs.package == 'typescript'
+    uses: ./.github/workflows/typescript-ts-check.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+
+  ts-test:
+    name: TypeScript unit tests
+    needs: scan-commits
+    if: inputs.package == 'typescript'
+    uses: ./.github/workflows/typescript-ts-test.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+
+  # ── Integration tests ──────────────────────────────────────────────────
+  # Skipped on forks by default because they require AWS_ROLE /
+  # STRANDS_INTEG_TEST_ROLE secrets that forks don't have. A fork that DOES
+  # have those secrets configured can opt in via `run_integ_on_fork: true`
+  # — useful for fork-testing changes that touch integration paths.
+  integ-python:
+    name: Python integration tests
+    needs: scan-commits
+    if: |
+      inputs.package == 'python' &&
+      (github.event.repository.fork != true || inputs.run_integ_on_fork == true)
+    uses: ./.github/workflows/python-integration-test.yml
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    secrets: inherit
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+
+  integ-typescript:
+    name: TypeScript integration tests
+    needs: scan-commits
+    if: |
+      inputs.package == 'typescript' &&
+      (github.event.repository.fork != true || inputs.run_integ_on_fork == true)
+    uses: ./.github/workflows/typescript-integration-test.yml
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    secrets: inherit
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+
+  # ── Security audit (informational) ─────────────────────────────────────
+  py-security-audit:
+    name: Python security audit
+    needs: scan-commits
+    if: inputs.package == 'python'
+    uses: ./.github/workflows/python-security-audit.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+
+  ts-security-audit:
+    name: TypeScript security audit
+    needs: scan-commits
+    if: inputs.package == 'typescript'
+    uses: ./.github/workflows/typescript-security-audit.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+
+  # ── Build + smoke test ─────────────────────────────────────────────────
+  # The called workflows build the wheel / pack the tarball, install it into
+  # a fresh venv / tmpdir OUTSIDE the monorepo, and verify import. They also
+  # upload the built artifact (pypi-build-output / npm-build-output) which
+  # the inspect jobs below consume.
+  py-package-build:
+    name: Python wheel install smoke test
+    needs: scan-commits
+    if: inputs.package == 'python'
+    uses: ./.github/workflows/python-test-package-build.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+      version: ${{ inputs.version }}
+
+  ts-package-pack:
+    name: TypeScript package-pack smoke test
+    needs: scan-commits
+    if: inputs.package == 'typescript'
+    uses: ./.github/workflows/typescript-test-package-pack.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ needs.scan-commits.outputs.release_sha }}
+      version: ${{ inputs.version }}
+
+  # ── Inspect the built artifact ─────────────────────────────────────────
+  # Downloads the build output, runs registry-level metadata checks, lists
+  # contents for the run log, and re-uploads as the publishable bundle.
+  # publish-pypi / publish-npm consume the RE-UPLOADED name so a reviewer can
+  # see in the artifact list which bundle passed inspection.
+  py-inspect:
+    name: Inspect Python dists
+    needs: py-package-build
+    if: inputs.package == 'python'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download build output
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-build-output
+          path: dist
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: List wheel + sdist contents
+        run: |
+          set -euo pipefail
+          for f in dist/*.whl; do
+            echo "::group::$f"; python -m zipfile -l "$f"; echo "::endgroup::"
+          done
+          for f in dist/*.tar.gz; do
+            echo "::group::$f"; tar tzf "$f"; echo "::endgroup::"
+          done
+
+      - name: Assert artifacts are stamped with the typed version
+        # Defense in depth — the smoke test already asserts `strands.__version__`
+        # post-install. This step parses the filenames as a second check,
+        # since PEP 427 encodes the version directly in the wheel name and
+        # nothing in the publish path can rewrite that.
+        env:
+          EXPECTED: ${{ inputs.version }}
+        run: |
+          python - <<'PYEOF'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED"]
+          errors = []
+          checked = 0
+          for f in sorted(Path("dist").iterdir()):
+              name = f.name
+              if name.endswith(".whl"):
+                  # PEP 427: {distribution}-{version}-{py}-{abi}-{plat}.whl
+                  m = re.match(r"^[^-]+-([^-]+)-", name)
+              elif name.endswith(".tar.gz"):
+                  # sdist: {distribution}-{version}.tar.gz
+                  m = re.match(r"^[^-]+-(.+)\.tar\.gz$", name)
+              else:
+                  continue
+              checked += 1
+              version = m.group(1) if m else None
+              if version != expected:
+                  errors.append(f"{name}: version is {version!r}, expected {expected!r}")
+          if not checked:
+              sys.exit(f"::error::No wheel or sdist found in dist/")
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}")
+              sys.exit(1)
+          print(f"All {checked} artifact(s) stamped with version {expected}")
+          PYEOF
+
+      - name: twine check (metadata + README rendering)
+        # PyPI silently truncates README rendering errors. `twine check`
+        # catches malformed long_description before the upload would reject
+        # the package mid-flight.
+        run: |
+          pip install --no-cache-dir twine
+          twine check dist/*
+
+      - name: Upload verified bundle for publish
+        uses: actions/upload-artifact@v7
+        with:
+          name: pypi-dist-bundle
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  ts-inspect:
+    name: Inspect npm tarball
+    needs: ts-package-pack
+    if: inputs.package == 'typescript'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download build output
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-build-output
+          path: dist-npm
+
+      - name: List tarball contents + package.json
+        # No `npm`-side equivalent of twine check, but listing the tarball
+        # surface + dumping the embedded package.json is enough to spot
+        # missing files or wrong version metadata before publish.
+        run: |
+          set -euo pipefail
+          for tgz in dist-npm/*.tgz; do
+            echo "::group::$tgz contents"
+            tar tzf "$tgz"
+            echo "::endgroup::"
+            echo "::group::$tgz package.json"
+            tar -xOzf "$tgz" package/package.json
+            echo "::endgroup::"
+          done
+
+      - name: Assert tarball is stamped with the typed version
+        # Defense in depth — the smoke test's pack step already asserts the
+        # version. This is a second check on the artifact actually being
+        # uploaded for publish.
+        env:
+          EXPECTED: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          checked=0
+          errors=0
+          for tgz in dist-npm/*.tgz; do
+            actual=$(tar -xOzf "$tgz" package/package.json | jq -r .version)
+            checked=$((checked + 1))
+            if [ "$actual" != "$EXPECTED" ]; then
+              echo "::error::$tgz: version is '$actual', expected '$EXPECTED'."
+              errors=$((errors + 1))
+            fi
+          done
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::No .tgz found under dist-npm/"
+            exit 1
+          fi
+          if [ "$errors" -gt 0 ]; then
+            exit 1
+          fi
+          echo "All $checked tarball(s) stamped with version $EXPECTED"
+
+      - name: Upload verified tarball for publish
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-pack-bundle
+          path: dist-npm/*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── Draft notes ────────────────────────────────────────────────────────
+  draft-summary:
+    name: Draft release notes
+    needs:
+      - scan-commits
+      - py-test-lint
+      - ts-check
+      - ts-test
+      - integ-python
+      - py-security-audit
+      - py-package-build
+      - py-inspect
+      - integ-typescript
+      - ts-security-audit
+      - ts-package-pack
+      - ts-inspect
+    # Run if all relevant predecessors succeeded (or skipped, since half are
+    # gated on the package input + integ is skipped on forks).
+    if: |
+      always() &&
+      needs.scan-commits.result == 'success' &&
+      (needs.py-test-lint.result == 'success' || needs.py-test-lint.result == 'skipped') &&
+      (needs.ts-check.result == 'success' || needs.ts-check.result == 'skipped') &&
+      (needs.ts-test.result == 'success' || needs.ts-test.result == 'skipped') &&
+      (needs.integ-python.result == 'success' || needs.integ-python.result == 'skipped') &&
+      (needs.py-security-audit.result == 'success' || needs.py-security-audit.result == 'skipped') &&
+      (needs.py-package-build.result == 'success' || needs.py-package-build.result == 'skipped') &&
+      (needs.py-inspect.result == 'success' || needs.py-inspect.result == 'skipped') &&
+      (needs.integ-typescript.result == 'success' || needs.integ-typescript.result == 'skipped') &&
+      (needs.ts-security-audit.result == 'success' || needs.ts-security-audit.result == 'skipped') &&
+      (needs.ts-package-pack.result == 'success' || needs.ts-package-pack.result == 'skipped') &&
+      (needs.ts-inspect.result == 'success' || needs.ts-inspect.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.scan-commits.outputs.release_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Configure AWS credentials for Bedrock
+        # `continue-on-error` so a fork run (no AWS_ROLE_ARN secret) doesn't
+        # hard-fail here — the Python script then runs with no creds, boto3
+        # fails, and the bash fallback below kicks in. Upstream runs with a
+        # valid role-to-assume don't notice.
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-2
+          mask-aws-account-id: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install boto3
+        run: pip install --no-cache-dir boto3
+
+      - name: Draft notes (Bedrock, with shortlog fallback)
+        id: notes
+        env:
+          PACKAGE: ${{ inputs.package }}
+          PREV_TAG: ${{ needs.scan-commits.outputs.prev_tag }}
+          NEW_REF: ${{ needs.scan-commits.outputs.release_sha }}
+        # If Bedrock fails (regional outage, throttling, IAM hiccup, or no
+        # creds at all on a fork), fall back to a deterministic git shortlog
+        # so the release isn't blocked on AI availability. The fallback
+        # writes a clearly-marked banner so reviewers know the AI summary is
+        # missing.
+        run: |
+          set -euo pipefail
+          if python .github/scripts/draft-release-notes.py; then
+            echo "ai_summary=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Bedrock call failed; falling back to git shortlog."
+            {
+              echo "> ⚠️ AI release-note drafting was unavailable for this run."
+              echo "> Falling back to a raw \`git shortlog\`. Edit the GitHub release after publish if you want a polished writeup."
+              echo ""
+              echo "## Commits since \`$PREV_TAG\`"
+              echo ""
+              echo '```'
+              git shortlog -n --no-merges "$PREV_TAG..$NEW_REF"
+              echo '```'
+            } > release-notes.md
+            echo "ai_summary=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render release summary
+        env:
+          PACKAGE: ${{ inputs.package }}
+          PREV_TAG: ${{ needs.scan-commits.outputs.prev_tag }}
+          NEW_TAG: ${{ needs.scan-commits.outputs.new_tag }}
+          RELEASE_SHA: ${{ needs.scan-commits.outputs.release_sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          AI_OK: ${{ steps.notes.outputs.ai_summary }}
+          IS_FORK: ${{ github.event.repository.fork }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release proposal"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Package | \`$PACKAGE\` |"
+            echo "| Previous tag | \`$PREV_TAG\` |"
+            echo "| Proposed tag | \`$NEW_TAG\` |"
+            echo "| Pinned SHA | \`$RELEASE_SHA\` |"
+            echo "| AI summary available | \`$AI_OK\` |"
+            echo "| Dry run | \`$DRY_RUN\` |"
+            echo "| Running on fork | \`$IS_FORK\` |"
+            echo ""
+            echo "> Reviewers: the verified artifact is uploaded as \`pypi-dist-bundle\` or \`npm-pack-bundle\` on this run's page. Download it and install in a fresh venv / tmpdir to sanity-check before approving."
+            echo ""
+            echo "### Drafted release notes"
+            echo ""
+            cat release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 30
+
+  # ── Reviewer approval (skipped on dry runs) ────────────────────────────
+  approve-release:
+    name: Wait for 2 reviewer approvals
+    needs: [scan-commits, draft-summary]
+    if: inputs.dry_run != true
+    runs-on: ubuntu-latest
+    environment:
+      # Configure required_reviewers >= 2 on this environment in repo
+      # settings. GitHub will pause this job until that many distinct
+      # approvers sign off.
+      #
+      # On a fork: the fork's copy of this environment has no reviewer
+      # config, so the job auto-passes. That's intentional — fork runs use
+      # this as a passthrough on the way to publish-pypi / publish-npm,
+      # which is the step that actually fails on a fork.
+      name: release-${{ inputs.package }}
+    permissions: {}
+    steps:
+      - name: Acknowledge approval
+        env:
+          NEW_TAG: ${{ needs.scan-commits.outputs.new_tag }}
+          RELEASE_SHA: ${{ needs.scan-commits.outputs.release_sha }}
+        run: |
+          echo "Approved to release $NEW_TAG at $RELEASE_SHA."
+
+  # ── Tag + GitHub release ──────────────────────────────────────────────
+  # Runs BEFORE registry publish so the tag exists as the source of truth
+  # before the package goes live. Conventional ordering + better recovery:
+  # if publish-* fails afterwards, the tag still points at the right SHA
+  # and the publish job can be re-run on its own (the artifact is in
+  # pypi-dist-bundle / npm-pack-bundle). Doing publish first would mean a
+  # tag-creation failure leaves the package on PyPI with no git tag — a
+  # harder mess to clean up.
+  #
+  # On a fork: the job RUNS (so publish-* can `needs:` it without being
+  # skipped) but its `gh release create` step short-circuits, since we
+  # don't want a leftover release object on every fork-test run.
+  create-gh-release:
+    name: Create GitHub release
+    needs: [scan-commits, draft-summary, approve-release]
+    if: inputs.dry_run != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create a release (which creates the tag)
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event.repository.fork != true
+        with:
+          ref: ${{ needs.scan-commits.outputs.release_sha }}
+          persist-credentials: false
+
+      - name: Download release notes artifact
+        if: github.event.repository.fork != true
+        uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
+      - name: Create release (atomically tags the pinned SHA)
+        if: github.event.repository.fork != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ needs.scan-commits.outputs.new_tag }}
+          RELEASE_SHA: ${{ needs.scan-commits.outputs.release_sha }}
+        # `gh release create ... --target <sha>` creates the tag pointing at
+        # the SHA AND the release in one call. If we pushed the tag
+        # separately and `release create` then failed, the next run would
+        # see a tag that doesn't correspond to a release. Doing it in one
+        # step avoids that orphan-tag class of failure.
+        run: |
+          set -euo pipefail
+          gh release create "$NEW_TAG" \
+            --target "$RELEASE_SHA" \
+            --title "$NEW_TAG" \
+            --notes-file release-notes.md
+
+      - name: Note (fork)
+        if: github.event.repository.fork == true
+        env:
+          NEW_TAG: ${{ needs.scan-commits.outputs.new_tag }}
+          RELEASE_SHA: ${{ needs.scan-commits.outputs.release_sha }}
+        run: |
+          echo "::notice::Running on a fork — skipped \`gh release create\`. On upstream this would tag $NEW_TAG at $RELEASE_SHA and attach the drafted notes."
+
+  # ── Publish to registry (THE step that fails on a fork) ────────────────
+  # No checkout, no fresh build — these jobs publish exactly the bytes that
+  # py-inspect / ts-inspect verified. OIDC trusted publishing means the only
+  # auth is the GHA-issued OIDC token, whose `repository` claim must match
+  # the trusted publisher config on PyPI / NPM. On a fork that claim is
+  # `<fork-owner>/harness-sdk` and the registry rejects it — by design.
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [scan-commits, py-inspect, approve-release, create-gh-release]
+    if: inputs.dry_run != true && inputs.package == 'python'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/strands-agents
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download verified dists
+        uses: actions/download-artifact@v8
+        with:
+          name: pypi-dist-bundle
+          path: dist
+
+      - name: Publish to PyPI
+        # gh-action-pypi-publish defaults to publishing everything in dist/.
+        # The action uses the OIDC token from id-token: write above; no
+        # PYPI_API_TOKEN needed (and none configured — trusted publisher
+        # only).
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-npm:
+    name: Publish to NPM
+    needs: [scan-commits, ts-inspect, approve-release, create-gh-release]
+    if: inputs.dry_run != true && inputs.package == 'typescript'
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@strands-agents/sdk
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm to latest
+        # Trusted publishing needs npm >= 11.5.1.
+        run: npm install -g npm@latest
+
+      - name: Download verified tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-pack-bundle
+          path: dist-npm
+
+      - name: Publish to NPM
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tgzs=(dist-npm/*.tgz)
+          if [ "${#tgzs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 tarball under dist-npm/, found ${#tgzs[@]}."
+            ls -la dist-npm/ || true
+            exit 1
+          fi
+          # ./ prefix: npm treats a bare "dir/file.tgz" as a git spec.
+          npm publish "./${tgzs[0]}" --access public --tag latest
+

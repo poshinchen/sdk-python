@@ -20,6 +20,11 @@ on:
       ref:
         required: true
         type: string
+      version:
+        description: 'If set, run `npm version <value> --no-git-tag-version` before pack. Required for release-time builds — without it the packed tarball uses whatever version is committed in package.json (typically 0.0.0). PR-time callers leave this empty.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   test-package-pack:
@@ -44,6 +49,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Stamp version (if provided)
+        # Stamps the typed release version into strands-ts/package.json so
+        # the subsequent build + pack produce a tarball at that exact
+        # version. Skipped on PR-time runs (no version input) — the test
+        # only validates the install/import surface there, not the version.
+        working-directory: strands-ts
+        env:
+          PINNED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PINNED_VERSION" ]; then
+            echo "Stamping $PINNED_VERSION into package.json"
+            npm version "$PINNED_VERSION" --no-git-tag-version
+          else
+            echo "No version pinned; packing with package.json as-committed."
+          fi
+
       - name: Build
         run: npm run build
 
@@ -51,11 +73,25 @@ jobs:
         # The tempdir MUST live outside the monorepo — otherwise npm hoists
         # devDependencies from the repo root into resolution and silently
         # satisfies missing optional peers, defeating the test.
+        env:
+          PINNED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           TARBALL=$(cd strands-ts && npm pack --silent)
           TARBALL_PATH="$GITHUB_WORKSPACE/strands-ts/$TARBALL"
           echo "Packed: $TARBALL_PATH"
+
+          # When a version is pinned, assert the packed tarball carries it.
+          # Catches a stamp-step failure that silently shipped 0.0.0 (or any
+          # stale package.json version).
+          if [ -n "$PINNED_VERSION" ]; then
+            actual=$(tar -xOzf "$TARBALL_PATH" package/package.json | jq -r .version)
+            if [ "$actual" != "$PINNED_VERSION" ]; then
+              echo "::error::Packed tarball has version '$actual' but expected '$PINNED_VERSION'."
+              exit 1
+            fi
+            echo "Tarball version OK: $actual"
+          fi
 
           WORK=$(mktemp -d)
           trap 'rm -rf "$WORK"' EXIT
@@ -71,3 +107,14 @@ jobs:
 
           npx tsc --noEmit
           npx tsx verify.ts
+
+      # Upload the packed tarball so release.yml's inspect/publish jobs can
+      # consume the EXACT bytes this smoke test validated. PR-triggered runs
+      # also upload (short retention) — harmless.
+      - name: Upload tarball for downstream inspect/publish
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-build-output
+          path: strands-ts/*.tgz
+          if-no-files-found: error
+          retention-days: 7

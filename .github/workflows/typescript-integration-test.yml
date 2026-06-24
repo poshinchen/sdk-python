@@ -11,9 +11,76 @@ on:
       - '.github/workflows/typescript-*'
   merge_group:
     types: [checks_requested]
+  # === workflow_call entry point — TRUST INVARIANT ===
+  #
+  # This trigger lets another workflow in THIS repo reuse the integ tests
+  # against an arbitrary `ref` while keeping access to AWS_*. The
+  # authorization-check below is skipped on this path because the only caller
+  # today (release.yml) is `workflow_dispatch`-gated, which requires repo
+  # write access to invoke.
+  #
+  # Before adding a new caller, verify ALL of the following:
+  #   1. The caller cannot be triggered by an unauthenticated user or a fork
+  #      (so: NOT pull_request, NOT pull_request_target without an auth gate,
+  #      NOT push from any branch except main).
+  #   2. The caller cannot be coerced into passing a fork-PR ref
+  #      (refs/pull/.../merge) — see `validate-call-ref` job below for the
+  #      runtime guard, but the caller should not need to be coerced if (1)
+  #      holds.
+  #   3. AWS_ROLE / STRANDS_INTEG_TEST_ROLE secrets are scoped to least
+  #      privilege.
+  #
+  # Skipping these checks effectively gives the new caller's trigger surface
+  # the same trust as a maintainer-typed `Run workflow` click.
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+
 jobs:
+  validate-call-ref:
+    name: Validate workflow_call ref
+    if: inputs.ref != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Defense in depth for the workflow_call entry point. `inputs.ref` is
+    # supplied by the caller; rejecting fork-PR-shaped refs here means a
+    # future caller cannot accidentally check out untrusted code with secrets
+    # loaded. Branches and SHAs pass; `refs/pull/*/merge` and cross-repo refs
+    # (`owner:branch`) fail.
+    #
+    # We intentionally do NOT block based on `github.event.repository.fork`.
+    # A fork running its OWN workflow with its OWN secrets is a legitimate
+    # use case (e.g. release.yml's `run_integ_on_fork: true` path for fork
+    # owners who have configured their own AWS_ROLE_ARN). Upstream secrets
+    # are not accessible from a fork's runner, so there's nothing to leak
+    # by allowing the call through.
+    steps:
+      - name: Reject untrusted-shaped refs
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          case "$REF" in
+            refs/pull/*|*:*)
+              echo "::error::workflow_call ref '$REF' looks like a fork PR or cross-repo ref."
+              exit 1
+              ;;
+          esac
+          echo "ref '$REF' passed shape check."
+
   authorization-check:
     name: Check access
+    needs: [validate-call-ref]
+    # `needs` only runs after non-skipped predecessors. validate-call-ref is
+    # skipped on pull_request_target / merge_group (inputs.ref is empty), so
+    # we use `if: always()` to ensure auth-check still runs there. On
+    # workflow_call, validate-call-ref must have succeeded.
+    if: |
+      always() &&
+      (needs.validate-call-ref.result == 'success' || needs.validate-call-ref.result == 'skipped')
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -24,7 +91,10 @@ jobs:
         id: auth
         uses: strands-agents/devtools/authorization-check@main
         with:
-          skip-check: ${{ github.event_name == 'merge_group' }}
+          # Skip on merge_group (gated by branch protection) and on
+          # workflow_call (the caller — release.yml — is workflow_dispatch
+          # gated, see the trigger comment above).
+          skip-check: ${{ github.event_name == 'merge_group' || github.event_name == 'workflow_call' }}
           username: ${{ github.event.pull_request.user.login || 'invalid' }}
           allowed-roles: 'triage,write,maintain,admin'
 
@@ -50,7 +120,7 @@ jobs:
       - name: Checkout head commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }} # Pull the commit from the forked repo
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha }} # PR commit, or release.yml's ref
           fetch-depth: 0  # full history so selective testing can diff against the base
           persist-credentials: false  # Don't persist credentials for subsequent actions
           allow-unsafe-pr-checkout: true  # opt back into fork-PR checkout, blocked by default in checkout@v7
