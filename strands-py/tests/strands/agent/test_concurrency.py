@@ -1,5 +1,6 @@
 """Unit tests for _ConcurrencyController (idempotency + invocation locking)."""
 
+import asyncio
 import threading
 from unittest.mock import MagicMock
 
@@ -78,7 +79,7 @@ def test_complete_with_result_signals_waiters(controller):
     mock_result = MagicMock()
     controller.complete(first.registered_token, result=mock_result)
 
-    assert dup.waiting_on.done.is_set()
+    assert dup.waiting_on.settled
     assert dup.waiting_on.result is mock_result
     assert dup.waiting_on.error is None
 
@@ -90,7 +91,7 @@ def test_complete_with_error_signals_waiters(controller):
     err = RuntimeError("boom")
     controller.complete(first.registered_token, error=err)
 
-    assert dup.waiting_on.done.is_set()
+    assert dup.waiting_on.settled
     assert dup.waiting_on.error is err
     assert dup.waiting_on.result is None
 
@@ -101,8 +102,25 @@ def test_complete_with_neither_result_nor_error_sets_aborted(controller):
 
     controller.complete(first.registered_token)
 
-    assert dup.waiting_on.done.is_set()
+    assert dup.waiting_on.settled
     assert isinstance(dup.waiting_on.error, IdempotencyAbortedError)
+
+
+def test_settle_is_idempotent_first_outcome_wins():
+    """settle() called twice keeps the first outcome and stays settled.
+
+    The controller serializes settle() via the inflight lock, so this guards the
+    idempotency contract directly at the _InflightInvocation level.
+    """
+    inflight = _InflightInvocation()
+    first_result = MagicMock()
+
+    inflight.settle(first_result, None)
+    inflight.settle(None, RuntimeError("second"))  # must be ignored
+
+    assert inflight.settled is True
+    assert inflight.result is first_result
+    assert inflight.error is None
 
 
 def test_complete_is_idempotent_on_double_call(controller):
@@ -189,9 +207,9 @@ def test_multiple_duplicates_all_wake_up(controller):
     mock_result = MagicMock()
     controller.complete(first.registered_token, result=mock_result)
 
-    assert dup1.waiting_on.done.is_set()
-    assert dup2.waiting_on.done.is_set()
-    assert dup3.waiting_on.done.is_set()
+    assert dup1.waiting_on.settled
+    assert dup2.waiting_on.settled
+    assert dup3.waiting_on.settled
     # All three see the same _InflightInvocation instance.
     assert dup1.waiting_on is dup2.waiting_on is dup3.waiting_on
     assert dup1.waiting_on.result is mock_result
@@ -253,3 +271,48 @@ def test_concurrent_begin_only_one_primary_others_duplicates(controller):
     assert primaries[0].lock_acquired is True
     assert all(d.lock_acquired is False for d in duplicates)
     assert all(d.registered_token is None for d in duplicates)
+
+
+@pytest.mark.asyncio
+async def test_register_waiter_resolves_when_primary_settles_from_another_thread(controller):
+    """A waiter awaits a future (no thread parked) that resolves on cross-thread completion."""
+    first = controller.begin("abc")
+    dup = controller.begin("abc")
+
+    wait_future = dup.waiting_on.register_waiter()
+    assert not wait_future.done()
+
+    mock_result = MagicMock()
+    threading.Thread(target=lambda: controller.complete(first.registered_token, result=mock_result)).start()
+
+    await asyncio.wait_for(wait_future, timeout=5)
+    assert dup.waiting_on.result is mock_result
+
+
+@pytest.mark.asyncio
+async def test_register_waiter_resolves_immediately_when_already_settled(controller):
+    """If the primary settles before the waiter registers, the awaitable resolves at once."""
+    first = controller.begin("abc")
+    dup = controller.begin("abc")
+    controller.complete(first.registered_token, result=MagicMock())
+
+    assert dup.waiting_on.settled is True
+    await asyncio.wait_for(dup.waiting_on.register_waiter(), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_one_waiter_does_not_strand_others(controller):
+    """Cancelling one waiting duplicate must not cancel the shared signal for the rest."""
+    first = controller.begin("abc")
+    dup = controller.begin("abc")
+
+    cancelled = dup.waiting_on.register_waiter()
+    survivor = dup.waiting_on.register_waiter()
+    cancelled.cancel()
+    await asyncio.sleep(0)
+
+    mock_result = MagicMock()
+    threading.Thread(target=lambda: controller.complete(first.registered_token, result=mock_result)).start()
+
+    await asyncio.wait_for(survivor, timeout=5)
+    assert dup.waiting_on.result is mock_result

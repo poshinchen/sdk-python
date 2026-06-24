@@ -8,6 +8,8 @@ in ``agent.py`` and the synchronization primitives + bookkeeping here.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -23,12 +25,43 @@ if TYPE_CHECKING:
 class _InflightInvocation:
     """Tracks an inflight invocation for idempotency deduplication.
 
-    Duplicate callers wait on ``done`` and then read ``result`` or ``error``.
+    Duplicate callers register via ``register_waiter`` and await the returned awaitable,
+    then read ``result`` or ``error``. The primary calls ``settle`` on completion.
+
+    A single thread-safe ``concurrent.futures.Future`` is the broadcast signal; each
+    waiter turns it into a loop-local awaitable via ``asyncio.wrap_future``, which hooks
+    a done-callback that bridges back to the waiter's loop with ``call_soon_threadsafe``.
+    No waiter ever blocks a thread-pool worker, so a storm of duplicates cannot starve
+    the executor the primary needs to make progress. The wrapped future is ``shield``ed
+    so that cancelling one waiting duplicate cannot cancel the shared signal and strand
+    the others.
     """
 
-    done: threading.Event = field(default_factory=threading.Event)
     result: AgentResult | None = None
     error: BaseException | None = None
+    _done: concurrent.futures.Future = field(default_factory=concurrent.futures.Future, repr=False)
+
+    @property
+    def settled(self) -> bool:
+        """Whether the primary has produced a result or error yet."""
+        return self._done.done()
+
+    def register_waiter(self) -> asyncio.Future:
+        """Return a loop-local awaitable that resolves when the primary settles.
+
+        Resolves immediately if the primary has already settled (the caller then reads
+        ``result``/``error``), so there is no register-after-settle race to handle.
+        """
+        return asyncio.shield(asyncio.wrap_future(self._done))
+
+    def settle(self, result: AgentResult | None, error: BaseException | None) -> None:
+        """Record the outcome and wake every registered waiter. Idempotent: first wins."""
+        if self._done.done():
+            return
+        # Publish result/error before signalling so woken waiters observe them.
+        self.result = result
+        self.error = error
+        self._done.set_result(None)
 
 
 @dataclass
@@ -37,8 +70,8 @@ class _BeginResult:
 
     Exactly one of the following is the actionable signal for the caller:
 
-    - ``waiting_on`` is set: this call is a duplicate of an inflight token. Wait on
-      ``waiting_on.done`` and then yield the cached result or raise the cached error.
+    - ``waiting_on`` is set: this call is a duplicate of an inflight token. Await
+      ``waiting_on.register_waiter()`` and then yield the cached result or raise the cached error.
     - ``lock_acquired`` is False: a different invocation owns the lock. Raise
       ``ConcurrencyException``.
     - Otherwise: proceed with the invocation. Pass ``registered_token`` back to
@@ -54,8 +87,9 @@ class _ConcurrencyController:
     """Owns the invocation lock and the inflight idempotency-token registry.
 
     In THROW mode only one invocation can be inflight at a time, so a single
-    inflight slot suffices. Uses ``threading`` primitives (not asyncio) because
-    ``Agent.run_async()`` may spawn separate event loops on separate threads.
+    inflight slot suffices. The lock and registry use ``threading`` primitives
+    because ``Agent.run_async()`` may spawn separate event loops on separate threads;
+    waiter notification bridges back to each waiter's loop via ``call_soon_threadsafe``.
     """
 
     def __init__(self, mode: ConcurrentInvocationMode) -> None:
@@ -124,12 +158,11 @@ class _ConcurrencyController:
             return
 
         if error is not None:
-            inflight.error = error
+            inflight.settle(None, error)
         elif result is not None:
-            inflight.result = result
+            inflight.settle(result, None)
         else:
-            inflight.error = IdempotencyAbortedError("Primary invocation was aborted before producing a result.")
-        inflight.done.set()
+            inflight.settle(None, IdempotencyAbortedError("Primary invocation was aborted before producing a result."))
 
     def try_acquire_lock(self) -> bool:
         """Non-blockingly acquire the invocation lock.
