@@ -8,27 +8,21 @@ on:
       - '.github/workflows/python-*'
   merge_group:
     types: [checks_requested]
-  # === workflow_call entry point — TRUST INVARIANT ===
+  # workflow_call entry — TRUST INVARIANT.
   #
-  # This trigger lets another workflow in THIS repo reuse the integ tests
-  # against an arbitrary `ref` while keeping access to AWS_*. The
-  # authorization-check below is skipped on this path because the only caller
-  # today (release.yml) is `workflow_dispatch`-gated, which requires repo
-  # write access to invoke.
+  # Lets another workflow in this repo reuse the integ tests against an
+  # arbitrary `ref` while keeping AWS_*. The authorization-check below is
+  # skipped on this path because the only callers
+  # (release-python.yml / release-typescript.yml) are workflow_dispatch-
+  # gated, which already requires repo write access.
   #
-  # Before adding a new caller, verify ALL of the following:
-  #   1. The caller cannot be triggered by an unauthenticated user or a fork
-  #      (so: NOT pull_request, NOT pull_request_target without an auth gate,
-  #      NOT push from any branch except main).
-  #   2. The caller cannot be coerced into passing a fork-PR ref
-  #      (refs/pull/.../merge) — see `validate-call-ref` job below for the
-  #      runtime guard, but the caller should not need to be coerced if (1)
-  #      holds.
-  #   3. AWS_ROLE / STRANDS_INTEG_TEST_ROLE secrets are scoped to least
-  #      privilege.
-  #
-  # Skipping these checks effectively gives the new caller's trigger surface
-  # the same trust as a maintainer-typed `Run workflow` click.
+  # Before adding another caller, check all of:
+  #   1. Cannot be triggered by an unauthenticated user or a fork
+  #      (no pull_request; no pull_request_target without an auth gate;
+  #      no push from non-main branches).
+  #   2. Cannot be coerced into a fork-PR ref. validate-call-ref below is
+  #      the runtime guard, but condition 1 should make that unnecessary.
+  #   3. AWS_ROLE / STRANDS_INTEG_TEST_ROLE are scoped to least privilege.
   workflow_call:
     inputs:
       ref:
@@ -42,18 +36,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # Defense in depth for the workflow_call entry point. `inputs.ref` is
-    # supplied by the caller; rejecting fork-PR-shaped refs here means a
-    # future caller cannot accidentally check out untrusted code with secrets
-    # loaded. Branches and SHAs pass; `refs/pull/*/merge` and cross-repo refs
-    # (`owner:branch`) fail.
+    # Reject ref shapes that could check out untrusted code:
+    # `refs/pull/*` (fork-PR merge refs) and `owner:branch` (cross-repo
+    # refs) fail; plain branches and SHAs pass.
     #
-    # We intentionally do NOT block based on `github.event.repository.fork`.
-    # A fork running its OWN workflow with its OWN secrets is a legitimate
-    # use case (e.g. release.yml's `run_integ_on_fork: true` path for fork
-    # owners who have configured their own AWS_ROLE_ARN). Upstream secrets
-    # are not accessible from a fork's runner, so there's nothing to leak
-    # by allowing the call through.
+    # We do not also block on `github.event.repository.fork`. That flag is
+    # only `true` when this workflow runs on a fork's own runner — which
+    # is a legitimate case (release-python.yml's `run_integ_tests: true`
+    # lets a fork-owner test the pipeline with their own secrets). The
+    # ref-shape check above is what actually rejects untrusted refs.
     steps:
       - name: Reject untrusted-shaped refs
         env:

@@ -18,7 +18,7 @@ on:
         required: true
         type: string
       version:
-        description: 'If set, pin the build to this version (HATCH_VCS_PRETEND_VERSION). Required for release-time builds — without it hatch-vcs derives a `…dev+g<sha>` version from the previous tag, since the release tag is created later. PR-time callers leave this empty.'
+        description: 'If set, pin the wheel to this version via SETUPTOOLS_SCM_PRETEND_VERSION. Required at release time (the release tag does not exist yet, so setuptools-scm would otherwise derive a dev version). PR-time callers leave this empty.'
         required: false
         type: string
         default: ''
@@ -53,10 +53,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "$PINNED_VERSION" ]; then
-            echo "Building with HATCH_VCS_PRETEND_VERSION=$PINNED_VERSION"
-            export HATCH_VCS_PRETEND_VERSION="$PINNED_VERSION"
+            echo "Building with SETUPTOOLS_SCM_PRETEND_VERSION=$PINNED_VERSION"
+            export SETUPTOOLS_SCM_PRETEND_VERSION="$PINNED_VERSION"
           else
-            echo "No version pinned; hatch-vcs will derive from git tags."
+            echo "No version pinned; setuptools-scm will derive from git tags."
           fi
           python -m build
 
@@ -83,28 +83,26 @@ jobs:
           "$WORK/venv/bin/pip" install --upgrade pip
           "$WORK/venv/bin/pip" install "$WHEEL"
 
-          # Import from a directory that does NOT contain the source tree, so
-          # the only resolvable `strands` package is the one from the wheel.
-          # When a version is pinned, assert the installed package reports
-          # exactly that version — catches a build that silently produced a
-          # `…dev+g<sha>` artifact.
+          # Import from a directory outside the source tree, so the only
+          # resolvable `strands` is the one from the wheel. When a version
+          # is pinned, also assert the installed package reports it.
           cd "$WORK"
           if [ -n "$PINNED_VERSION" ]; then
             PINNED_VERSION="$PINNED_VERSION" "$WORK/venv/bin/python" - <<'PYEOF'
           import os
-          import strands
+          from importlib.metadata import version
+          import strands  # ensure the wheel imports from a clean venv
           expected = os.environ["PINNED_VERSION"]
-          actual = getattr(strands, "__version__", "unknown")
-          assert actual == expected, f"strands.__version__ is {actual!r}, expected {expected!r}"
+          actual = version("strands-agents")
+          assert actual == expected, f"strands-agents version is {actual!r}, expected {expected!r}"
           print(f"version OK: {actual}")
           PYEOF
           else
-            "$WORK/venv/bin/python" -c "import strands; print('strands version:', getattr(strands, '__version__', 'unknown'))"
+            "$WORK/venv/bin/python" -c "import strands; from importlib.metadata import version; print('strands version:', version('strands-agents'))"
           fi
 
-      # Upload the wheel + sdist so the release.yml inspect/publish jobs can
-      # consume the EXACT bytes this smoke test validated. PR-triggered runs
-      # also upload (short retention) — harmless.
+      # Upload for release-python.yml's inspect/publish path to consume.
+      # PR-triggered runs also upload (short retention) — harmless.
       - name: Upload wheel + sdist for downstream inspect/publish
         uses: actions/upload-artifact@v7
         with:
