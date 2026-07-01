@@ -249,9 +249,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # ── Draft notes from git shortlog ──────────────────────────────────────
+  # ── Draft notes grouped by commit type ─────────────────────────────────
   draft-notes:
-    name: Draft release notes (git shortlog)
+    name: Draft release notes (grouped by commit type)
     needs:
       - scan-commits
       - ts-check
@@ -287,13 +287,11 @@ jobs:
           NEW_TAG: ${{ needs.scan-commits.outputs.new_tag }}
         run: |
           set -euo pipefail
-          {
-            echo "## $NEW_TAG"
-            echo ""
-            echo "_Auto-drafted from \`git shortlog $PREV_TAG..$NEW_REF\`. Edit on the release page after publish if you want a polished writeup; the canonical release notes live on the website._"
-            echo ""
-            git shortlog -n --no-merges "$PREV_TAG..$NEW_REF"
-          } > release-notes.md
+          # Feed commits to the grouper as `hash<TAB>subject` lines and let
+          # it bucket them by conventional-commit type (feat, fix, ...).
+          git log --no-merges --pretty=format:'%h%x09%s' "$PREV_TAG..$NEW_REF" \
+            | NEW_TAG="$NEW_TAG" PREV_TAG="$PREV_TAG" \
+              node .github/scripts/group-release-notes.mjs > release-notes.md
 
       - name: Render release summary
         env:
