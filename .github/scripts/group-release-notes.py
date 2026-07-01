@@ -37,11 +37,16 @@ COMMIT_RE = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]*\))?!?:\s*(?P<subject>.*)$")
 
 
 def classify(subject):
-    """Return `(section_key, cleaned_subject)` for a commit subject line."""
+    """Return the `section_key` for a commit subject line.
+
+    Only the type is parsed off, for bucketing; the subject itself is kept
+    verbatim (prefix included) by the caller so the rendered notes still
+    show the `feat:` / `fix:` convention.
+    """
     match = COMMIT_RE.match(subject)
     if match and match.group("type") in SECTION_TITLES:
-        return match.group("type"), match.group("subject").strip()
-    return OTHER_KEY, subject.strip()
+        return match.group("type")
+    return OTHER_KEY
 
 
 def main():
@@ -51,8 +56,8 @@ def main():
         if not line:
             continue
         short_hash, _, subject = line.partition("\t")
-        key, cleaned = classify(subject)
-        buckets.setdefault(key, []).append((short_hash, cleaned))
+        key = classify(subject)
+        buckets.setdefault(key, []).append((short_hash, subject.strip()))
 
     new_tag = os.environ.get("NEW_TAG", "")
     prev_tag = os.environ.get("PREV_TAG", "")
