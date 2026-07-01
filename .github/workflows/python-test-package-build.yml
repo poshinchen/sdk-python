@@ -18,7 +18,7 @@ on:
         required: true
         type: string
       version:
-        description: 'If set, pin the wheel to this version via HATCH_VCS_PRETEND_VERSION. Required at release time (the release tag does not exist yet, so hatch-vcs would otherwise derive a dev version). PR-time callers leave this empty.'
+        description: 'If set, pin the wheel to this version via SETUPTOOLS_SCM_PRETEND_VERSION. Required at release time (the release tag does not exist yet, so setuptools-scm would otherwise derive a dev version). PR-time callers leave this empty.'
         required: false
         type: string
         default: ''
@@ -53,10 +53,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "$PINNED_VERSION" ]; then
-            echo "Building with HATCH_VCS_PRETEND_VERSION=$PINNED_VERSION"
-            export HATCH_VCS_PRETEND_VERSION="$PINNED_VERSION"
+            echo "Building with SETUPTOOLS_SCM_PRETEND_VERSION=$PINNED_VERSION"
+            export SETUPTOOLS_SCM_PRETEND_VERSION="$PINNED_VERSION"
           else
-            echo "No version pinned; hatch-vcs will derive from git tags."
+            echo "No version pinned; setuptools-scm will derive from git tags."
           fi
           python -m build
 
@@ -90,14 +90,15 @@ jobs:
           if [ -n "$PINNED_VERSION" ]; then
             PINNED_VERSION="$PINNED_VERSION" "$WORK/venv/bin/python" - <<'PYEOF'
           import os
-          import strands
+          from importlib.metadata import version
+          import strands  # ensure the wheel imports from a clean venv
           expected = os.environ["PINNED_VERSION"]
-          actual = getattr(strands, "__version__", "unknown")
-          assert actual == expected, f"strands.__version__ is {actual!r}, expected {expected!r}"
+          actual = version("strands-agents")
+          assert actual == expected, f"strands-agents version is {actual!r}, expected {expected!r}"
           print(f"version OK: {actual}")
           PYEOF
           else
-            "$WORK/venv/bin/python" -c "import strands; print('strands version:', getattr(strands, '__version__', 'unknown'))"
+            "$WORK/venv/bin/python" -c "import strands; from importlib.metadata import version; print('strands version:', version('strands-agents'))"
           fi
 
       # Upload for release-python.yml's inspect/publish path to consume.
