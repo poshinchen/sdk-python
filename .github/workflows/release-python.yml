@@ -263,11 +263,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # ── Draft notes from git shortlog ──────────────────────────────────────
+  # ── Draft notes grouped by commit type ─────────────────────────────────
   # Polished release notes live on the website. This step just gives
   # reviewers a quick "what landed since prev tag" view.
   draft-notes:
-    name: Draft release notes (git shortlog)
+    name: Draft release notes (grouped by commit type)
     needs:
       - scan-commits
       - test-lint
