@@ -1,11 +1,11 @@
 import { Agent } from '@strands-agents/sdk'
 
-async function basic() {
-  // --8<-- [start:basic]
+async function auto() {
+  // --8<-- [start:auto]
   const agent = new Agent({
     contextManager: 'auto',
   })
-  // --8<-- [end:basic]
+  // --8<-- [end:auto]
 }
 
 async function agentic() {
@@ -14,4 +14,12 @@ async function agentic() {
     contextManager: 'agentic',
   })
   // --8<-- [end:agentic]
+}
+
+async function disabled() {
+  // --8<-- [start:disabled]
+  const agent = new Agent({
+    contextManager: false,
+  })
+  // --8<-- [end:disabled]
 }
