@@ -28,10 +28,10 @@ from typing_extensions import Unpack, override
 from ....models._validation import validate_config_keys
 from ....types._events import ToolUseStreamEvent
 from ....types.content import Messages, TextBlock
-from ....types.media import AudioBlock, ImageBlock
+from ....types.media import ImageBlock
 from ....types.tools import ToolResultBlock, ToolSpec, ToolUse
 from .._async import stop_all
-from ..types.content import BidiContentBlock
+from ..types.content import BidiContentBlock, BidiContentDelta
 from ..types.events import (
     BidiAudioStreamEvent,
     BidiConnectionStartEvent,
@@ -44,6 +44,7 @@ from ..types.events import (
     BidiUsageEvent,
     ModalityUsage,
 )
+from ..types.media import AudioDelta
 from .configs import (
     AudioConfig,
     AudioStreamConfig,
@@ -488,14 +489,14 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
 
     async def send(
         self,
-        content: BidiContentBlock | ToolResultBlock,
+        content: BidiContentBlock | BidiContentDelta | ToolResultBlock,
     ) -> None:
         """Unified send method for all content types. Sends the given inputs to the Gemini Live API.
 
         Dispatches to appropriate internal handler based on content type.
 
         Args:
-            content: A TextBlock, AudioBlock, ImageBlock, or ToolResultBlock.
+            content: A TextBlock, AudioDelta, ImageBlock, or ToolResultBlock.
 
         Raises:
             ValueError: If content type not supported.
@@ -505,7 +506,7 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
 
         if isinstance(content, TextBlock):
             await self._send_text_content(content.text)
-        elif isinstance(content, AudioBlock):
+        elif isinstance(content, AudioDelta):
             await self._send_audio_content(content)
         elif isinstance(content, ImageBlock):
             await self._send_image_content(content)
@@ -514,7 +515,7 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
         else:
             raise ValueError(f"content_type={type(content)} | content not supported")
 
-    async def _send_audio_content(self, audio_input: AudioBlock) -> None:
+    async def _send_audio_content(self, audio_input: AudioDelta) -> None:
         """Internal: Send audio content using Gemini Live API.
 
         Gemini Live expects continuous audio streaming via send_realtime_input.

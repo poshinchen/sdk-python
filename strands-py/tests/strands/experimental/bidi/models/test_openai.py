@@ -23,6 +23,7 @@ from strands.experimental.bidi.models.openai import (
     OPENAI_PROACTIVE_RECONNECT_MARGIN_S,
 )
 from strands.experimental.bidi.types import (
+    AudioDelta,
     BidiAudioStreamEvent,
     BidiConnectionStartEvent,
     BidiInterruptionEvent,
@@ -31,7 +32,7 @@ from strands.experimental.bidi.types import (
     BidiTranscriptStreamEvent,
 )
 from strands.types.content import TextBlock
-from strands.types.media import AudioBlock, ImageBlock
+from strands.types.media import ImageBlock
 from strands.types.tools import ToolResultBlock
 
 
@@ -386,7 +387,7 @@ async def test_send_all_content_types(mock_websockets_connect, model):
 
     # Test audio input
     audio_b64 = base64.b64encode(b"audio_bytes").decode("utf-8")
-    await model.send(AudioBlock(format="pcm", source={"bytes": b"audio_bytes"}))
+    await model.send(AudioDelta(format="pcm", source={"bytes": b"audio_bytes"}))
     calls = mock_ws.send.call_args_list
     messages = [json.loads(call[0][0]) for call in calls]
     audio_append = [m for m in messages if m.get("type") == "input_audio_buffer.append"]

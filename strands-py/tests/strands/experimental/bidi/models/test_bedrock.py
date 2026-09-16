@@ -32,6 +32,7 @@ from strands.experimental.bidi.models.bedrock import (
     _ResponseState,
 )
 from strands.experimental.bidi.types import (
+    AudioDelta,
     BidiAudioStreamEvent,
     BidiInterruptionEvent,
     BidiResponseCompleteEvent,
@@ -41,7 +42,7 @@ from strands.experimental.bidi.types import (
     BidiUsageEvent,
 )
 from strands.types.content import TextBlock
-from strands.types.media import AudioBlock, ImageBlock
+from strands.types.media import ImageBlock
 from strands.types.tools import ToolResultBlock
 
 
@@ -977,7 +978,7 @@ async def test_send_all_content_types(nova_model, mock_stream):
     assert mock_stream.input_stream.send.call_count >= 3
 
     # Test audio content
-    await nova_model.send(AudioBlock(format="pcm", source={"bytes": b"audio data"}))
+    await nova_model.send(AudioDelta(format="pcm", source={"bytes": b"audio data"}))
     # Should start audio connection and send audio
     assert nova_model._audio_content_name
     assert mock_stream.input_stream.send.called

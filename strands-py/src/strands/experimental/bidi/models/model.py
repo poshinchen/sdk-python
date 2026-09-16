@@ -21,7 +21,7 @@ from typing import Any, NoReturn, Protocol, cast, runtime_checkable
 from ....models.model import Model
 from ....types.content import Messages
 from ....types.tools import ToolResultBlock, ToolSpec
-from ..types.content import BidiContentBlock
+from ..types.content import BidiContentBlock, BidiContentDelta
 from ..types.events import BidiOutputEvent
 from .configs import AudioConfig, BidiConnectionConfig
 
@@ -138,7 +138,7 @@ class BidiModel(Model, abc.ABC):
     # pragma: no cover
     async def send(
         self,
-        content: BidiContentBlock | ToolResultBlock,
+        content: BidiContentBlock | BidiContentDelta | ToolResultBlock,
     ) -> None:
         """Send content to the model over the active connection.
 
@@ -147,16 +147,17 @@ class BidiModel(Model, abc.ABC):
         tool execution results. Can be called multiple times during a conversation.
 
         Args:
-            content: A TextBlock, AudioBlock, ImageBlock, or ToolResultBlock.
+            content: A TextBlock, AudioDelta, ImageBlock, or ToolResultBlock.
 
         Example:
             ```
+            from strands.experimental.bidi.types import AudioDelta
             from strands.types.content import TextBlock
-            from strands.types.media import AudioBlock, ImageBlock
+            from strands.types.media import ImageBlock
             from strands.types.tools import ToolResultBlock
 
             await model.send(TextBlock("Hello"))
-            await model.send(AudioBlock(format="pcm", source={"bytes": audio_bytes}))
+            await model.send(AudioDelta(format="pcm", source={"bytes": audio_bytes}))
             await model.send(ImageBlock(format="jpeg", source={"bytes": image_bytes}))
             await model.send(ToolResultBlock(tool_use_id="call-1", status="success", content=[{"text": "Done"}]))
             ```

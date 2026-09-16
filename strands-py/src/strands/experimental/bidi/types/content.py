@@ -3,10 +3,17 @@
 from typing import TypeAlias
 
 from ....types.content import TextBlock, _TextBlockData
-from ....types.media import AudioBlock, ImageBlock, _AudioBlockData, _ImageBlockData
+from ....types.media import ImageBlock, _ImageBlockData
+from .media import AudioDelta, _AudioDeltaData
 
-BidiContentBlock: TypeAlias = TextBlock | AudioBlock | ImageBlock
-"""A text, audio, or image block."""
+BidiContentBlock: TypeAlias = TextBlock | ImageBlock
+"""A complete text or image block."""
 
-BidiContentBlockData: TypeAlias = _TextBlockData | _AudioBlockData | _ImageBlockData
-"""Dictionary form of one text, audio, or image block."""
+BidiContentDelta: TypeAlias = AudioDelta
+"""An audio delta for the live input stream."""
+
+BidiContentBlockData: TypeAlias = _TextBlockData | _ImageBlockData
+"""Dictionary form of one text or image block."""
+
+BidiContentDeltaData: TypeAlias = _AudioDeltaData
+"""Dictionary form of an audio delta."""

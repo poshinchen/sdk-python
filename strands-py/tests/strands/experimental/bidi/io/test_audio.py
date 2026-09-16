@@ -15,11 +15,11 @@ import strands.experimental.bidi.io as bidi_io
 from strands.experimental.bidi.io import BidiAudioIO, BidiAudioProcessorConfig
 from strands.experimental.bidi.models import AudioCapable
 from strands.experimental.bidi.types import (
+    AudioDelta,
     BidiAudioStreamEvent,
     BidiInterruptionEvent,
     BidiResponseCompleteEvent,
 )
-from strands.types.media import AudioBlock
 
 
 def test_io_rejects_unknown_export():
@@ -142,7 +142,7 @@ async def test_bidi_audio_io_input(audio_input):
     audio_input._callback(b"test-audio")
 
     tru_event = await audio_input()
-    exp_event = AudioBlock(format="pcm", source={"bytes": b"test-audio"})
+    exp_event = AudioDelta(format="pcm", source={"bytes": b"test-audio"})
     assert tru_event == exp_event
 
 

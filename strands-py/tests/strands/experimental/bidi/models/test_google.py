@@ -20,6 +20,7 @@ import strands.experimental.bidi.agent.loop as loop_module
 from strands.experimental.bidi.models import BidiModelTimeoutError, GoogleGeminiLiveAudioConfig, GoogleGeminiLiveModel
 from strands.experimental.bidi.models.google import _TurnState
 from strands.experimental.bidi.types import (
+    AudioDelta,
     BidiAudioStreamEvent,
     BidiConnectionStartEvent,
     BidiInterruptionEvent,
@@ -30,7 +31,7 @@ from strands.experimental.bidi.types import (
     BidiUsageEvent,
 )
 from strands.types.content import TextBlock
-from strands.types.media import AudioBlock, ImageBlock
+from strands.types.media import ImageBlock
 from strands.types.tools import ToolResultBlock
 
 
@@ -658,7 +659,7 @@ async def test_send_all_content_types(mock_genai_client, model):
 
     # Test audio input
     mock_live_session.send_realtime_input.reset_mock()
-    await model.send(AudioBlock(format="pcm", source={"bytes": b"audio_bytes"}))
+    await model.send(AudioDelta(format="pcm", source={"bytes": b"audio_bytes"}))
     mock_live_session.send_realtime_input.assert_called_once()
 
     # Test image input
@@ -1285,7 +1286,7 @@ async def test_send_audio_uses_resolved_input_rate(mock_genai_client, api_key, r
     _, session, _ = mock_genai_client
     model = GoogleGeminiLiveModel(client_args={"api_key": api_key}, audio={"input": {"sample_rate": rate}})
     await model.start()
-    await model.send(AudioBlock(format="pcm", source={"bytes": b"audio"}))
+    await model.send(AudioDelta(format="pcm", source={"bytes": b"audio"}))
     session.send_realtime_input.assert_awaited_once_with(
         audio=genai_types.Blob(data=b"audio", mime_type=f"audio/pcm;rate={rate}")
     )
