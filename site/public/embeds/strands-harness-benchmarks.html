@@ -6,12 +6,12 @@
 <title>Harbor Report — Strands harness gets there for less (verified pricing)</title>
 <style>
   :root {
-    --brand:   #00FF77;   
-    --harness:    #2fd07f;   
+    --brand:   #00FF77;
+    --harness: #2fd07f;
     --ink:     #ffffff;
-    --muted:   #ffffff;   
+    --muted:   #ffffff;
     --faint:   #ffffff;
-    --dim:     #9aa1ab;  
+    --dim:     #9aa1ab;
     --rule:    #22252b;
     --grid:    #2b2f37;
     --axis:    #3a3f48;
@@ -139,7 +139,7 @@
    the four oh-my-pi points (ContextBench), and Codex + GPT-5.6 Terra (alfworld). See
    ariel-calculation.md. */
 const HARNESS = {
-  harness:               { label: "Strands harness",  shape: "circle",       hero: true, color: "var(--harness)" },
+  harness:           { label: "Strands harness",  shape: "circle",       hero: true, color: "var(--harness)" },
   "claude-code":      { label: "Claude Code",      shape: "square",       color: "#e8843c" },
   codex:              { label: "Codex",            shape: "diamond",      color: "#3f8ae0" },
   omp:                { label: "oh-my-pi",         shape: "triangle",     color: "var(--dim)" },
@@ -167,13 +167,13 @@ const POINTS = [
   { h: "opencode",         m: "GPT-5.6 Luna",    s: 57.76, c: 0.0136 },
   { h: "opencode",         m: "GPT-5.6 Sol",     s: 75.88, c: 0.3976 },
   { h: "opencode",         m: "GPT-5.6 Terra",   s: 57.18, c: 0.1277 },
-  { h: "harness",             m: "Claude Fable 5",  s: 81.11, c: 0.8286 },
-  { h: "harness",             m: "Claude Opus 4.8", s: 77.14, c: 0.4206 },
-  { h: "harness",             m: "Claude Opus 5",   s: 84.55, c: 0.6342 },
-  { h: "harness",             m: "Claude Sonnet 5", s: 75.61, c: 0.3110 },
-  { h: "harness",             m: "GPT-5.6 Luna",    s: 61.94, c: 0.0093 },
-  { h: "harness",             m: "GPT-5.6 Sol",     s: 76.72, c: 0.2934 },
-  { h: "harness",             m: "GPT-5.6 Terra",   s: 64.75, c: 0.1432 },
+  { h: "harness",          m: "Claude Fable 5",  s: 81.11, c: 0.8286 },
+  { h: "harness",          m: "Claude Opus 4.8", s: 77.14, c: 0.4206 },
+  { h: "harness",          m: "Claude Opus 5",   s: 84.55, c: 0.6342 },
+  { h: "harness",          m: "Claude Sonnet 5", s: 75.61, c: 0.3110 },
+  { h: "harness",          m: "GPT-5.6 Luna",    s: 61.94, c: 0.0093 },
+  { h: "harness",          m: "GPT-5.6 Sol",     s: 76.72, c: 0.2934 },
+  { h: "harness",          m: "GPT-5.6 Terra",   s: 64.75, c: 0.1432 },
 ];
 
 /* Efficient frontier: a point is on it when nothing scores at least as high for
@@ -260,7 +260,7 @@ ordered.forEach(p => {
 /* ---------------- labels ----------------
    Strands harness points labelled with the model (bold); Claude Code and Codex labelled with
    "model (harness)" so the head-to-head reads without hovering. Greedy placement
-   walks out from the mark to the first low-overlap slot; Strands Harness wins ties. */
+   walks out from the mark to the first low-overlap slot; Strands harness wins ties. */
 const LF = 19, CW = 0.55;
 const RINGS = [16, 24, 34, 46];
 const DIRS = [[1,-1],[-1,-1],[0,-1],[1,0],[-1,0],[1,1],[-1,1],[0,1]];
