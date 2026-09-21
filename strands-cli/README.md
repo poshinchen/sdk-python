@@ -88,7 +88,7 @@ compiled output and skips all source-build behavior.
 
 ## Customize the agent
 
-Run `strands --setup` or use `/setup` in chat to reopen the saved configuration. Quickstart and Manual
+Run `strands` or use `/setup` in chat to reopen the saved configuration. Quickstart and Manual
 edit the same profile. Agent Q&A first asks which model should guide the setup conversation, then
 opens the regular chat UI. This assistant model is independent of the model chosen for your custom
 agent. Setup Assistant first asks whether to start from scratch or use the detected configuration, then
@@ -177,7 +177,7 @@ strands --set 'builtinTools.web_fetch.model="openai/gpt-5-mini"' --set 'session.
 
 ## Setup and providers
 
-Run `strands --setup` or `/setup` to configure:
+Run `strands` or `/setup` to configure:
 
 - enabled providers and the default model,
 - the agent name and additional instructions,

@@ -228,7 +228,7 @@ Install it (Node.js 20+):
   npm install -g @strands-agents/cli
 
 Run the setup assistant:
-  strands --setup
+  strands
 
 It asks where to start (from scratch, or from a configuration it detects in the current
 directory), the agent's name and goals, and which capabilities to enable (it recommends a

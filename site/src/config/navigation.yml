@@ -101,7 +101,7 @@ products:
     name: Strands harness
     slug: "/harness"
     href: /docs/user-guide/harness/
-    description: Strands harness for a state-of-the-art fully assembled agent harness.
+    description: Strands harness is a state-of-the-art, fully assembled agent harness.
     pages:
       - label: Overview
         href: /docs/user-guide/harness/
