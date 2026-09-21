@@ -19,7 +19,7 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "tsc --project src/tsconfig.json && node scripts/bundle-python.js",
+    "build": "tsc --project src/tsconfig.json && node scripts/copy-python-runtime.js",
     "clean:dist": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepack": "npm run clean:dist && npm run build",
     "clean": "rm -rf dist node_modules",
