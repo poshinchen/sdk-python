@@ -38,10 +38,13 @@
 
 Strands Agents is an open-source SDK for building and running AI agents in Python and TypeScript. Choose Strands when you would otherwise write your own agent loop: it runs in your process with no hosted control plane, and it covers the jobs a hand-rolled loop grows into. In one SDK you get [lifecycle controls](https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/) (turn limits, token budgets, cancellation, stop reasons), [tools](https://strandsagents.com/docs/user-guide/concepts/tools/) and [structured output](https://strandsagents.com/docs/user-guide/concepts/agents/structured-output/), [MCP](https://strandsagents.com/docs/user-guide/concepts/tools/mcp-tools/), [multi-agent patterns](https://strandsagents.com/docs/user-guide/concepts/multi-agent/multi-agent-patterns/), [memory](https://strandsagents.com/docs/user-guide/concepts/memory/overview/) and [sessions](https://strandsagents.com/docs/user-guide/concepts/agents/session-management/), [model portability](https://strandsagents.com/docs/user-guide/concepts/model-providers/), [streaming](https://strandsagents.com/docs/user-guide/concepts/streaming/), [guardrails](https://strandsagents.com/docs/user-guide/safety-security/guardrails/), [tracing](https://strandsagents.com/docs/user-guide/observability-evaluation/observability/), and [evals](https://strandsagents.com/docs/user-guide/evals-sdk/quickstart/).
 
-This monorepo contains the Python SDK, TypeScript SDK, documentation site, and supporting packages:
+This monorepo contains Strands harness, the Python and TypeScript SDKs, the documentation site, and supporting packages:
 
 | Directory | Description |
 |-----------|-------------|
+| [`harness-py/`](harness-py/) | Python Strands harness: fully assembled agent via `create_harness()` ([PyPI](https://pypi.org/project/strands-harness/) · [docs](https://strandsagents.com/docs/user-guide/harness/)) |
+| [`harness-ts/`](harness-ts/) | TypeScript Strands harness: fully assembled agent via `createHarness()` ([npm](https://www.npmjs.com/package/@strands-agents/harness) · [docs](https://strandsagents.com/docs/user-guide/harness/)) |
+| [`strands-cli/`](strands-cli/) | `strands` CLI: prototype and chat with a harness agent from the terminal ([npm](https://www.npmjs.com/package/@strands-agents/cli)) |
 | `strands-py/` | Python SDK: agent loop, model providers, tools ([PyPI](https://pypi.org/project/strands-agents/) · [releases](https://github.com/strands-agents/harness-sdk/releases?q=python%2F&expanded=false)) |
 | `strands-ts/` | TypeScript SDK: agent loop, model providers, tools ([npm](https://www.npmjs.com/package/@strands-agents/sdk) · [releases](https://github.com/strands-agents/harness-sdk/releases?q=typescript%2F&expanded=false)) |
 | `site/` | Source for the [strandsagents.com](https://strandsagents.com) documentation site (Astro/Starlight) |
@@ -60,7 +63,41 @@ MCP, streaming, multi-agent patterns, and structured output are all built in.
 
 ## Quick Start
 
-Both SDKs default to the Amazon Bedrock model provider, so you'll need AWS credentials configured and model access enabled for Claude Sonnet. The [Quickstart Guide](https://strandsagents.com/docs/user-guide/quickstart/overview/) covers configuring other providers (Anthropic, OpenAI, Gemini, Ollama, and more).
+The easiest way to get started is with **[Strands harness](https://strandsagents.com/docs/user-guide/harness/)**, a fully assembled, state-of-the-art agent. A single `create_harness()` (Python) or `createHarness()` (TypeScript) call gives you an optimized agent with benchmarked defaults for the model, tools, memory, sessions, and context management — ready to take from idea to production. Follow the [harness quickstart](https://strandsagents.com/docs/user-guide/harness/quickstart/), or see the [Python Strands harness](harness-py/) and [TypeScript Strands harness](harness-ts/) packages to get started.
+
+### Python
+
+```bash
+pip install strands-harness
+```
+
+```python
+from strands_harness import create_harness
+
+agent = create_harness()
+agent("Find the slowest test in this repo and explain why it's slow")
+```
+
+### TypeScript
+
+```bash
+npm install @strands-agents/harness
+```
+
+```typescript
+import { createHarness } from '@strands-agents/harness'
+
+const agent = await createHarness()
+await agent.invoke("Find the slowest test in this repo and explain why it's slow")
+```
+
+Start here to get a batteries-included agent, then drop down to the SDKs below when you want to own the agent loop and wire up tools, model providers, and memory yourself. The [harness configuration reference](https://strandsagents.com/docs/user-guide/harness/reference/configuration/) documents every default you can override.
+
+The [Quickstart Guide](https://strandsagents.com/docs/user-guide/quickstart/overview/) covers configuring providers (Amazon Bedrock, Anthropic, OpenAI, Gemini, Ollama, and more).
+
+## Working with the SDK
+
+The Strands Harness SDK lets you go deeper and control every part of the agent: the loop, tools, model providers, memory, sessions, and hooks. You can dive into the SDK after working with Strands harness or if you prefer building your own harness from the ground up when the assembled defaults aren't enough.
 
 ### Python
 
@@ -103,6 +140,7 @@ More in the [TypeScript SDK README](strands-ts/), including Zod-typed tools, str
 For detailed guidance & examples, explore our documentation:
 
 - [User Guide](https://strandsagents.com/)
+- [Strands Harness Guide](https://strandsagents.com/docs/user-guide/harness/) ([quickstart](https://strandsagents.com/docs/user-guide/harness/quickstart/) · [configuration reference](https://strandsagents.com/docs/user-guide/harness/reference/configuration/))
 - [Quick Start Guide](https://strandsagents.com/docs/user-guide/quickstart/overview/)
 - [Agent Loop](https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/)
 - [Examples](https://strandsagents.com/docs/examples/)
