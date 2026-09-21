@@ -235,12 +235,43 @@ const extraHead: HeadEntry[] = [
     margin: 1.5rem 0;
   }
 
-  .blog-post-content :global(a) {
+  .blog-post-content :global(a:not([role='tab'])) {
     color: var(--sl-color-accent);
   }
 
-  .blog-post-content :global(a:hover) {
+  .blog-post-content :global(a:not([role='tab']):hover) {
     color: var(--sl-color-accent-high);
+  }
+
+  /* Tab labels are anchors, so the link rule above would paint them all green.
+     Keep unselected tabs muted; only the selected one is accented and bold. */
+  .blog-post-content :global(starlight-tabs [role='tab']) {
+    color: var(--sl-color-gray-2);
+    font-weight: 400;
+  }
+
+  .blog-post-content :global(starlight-tabs [role='tab'][aria-selected='true']) {
+    color: var(--sl-color-accent);
+    font-weight: 600;
+  }
+
+  /* Stretch the top-level provider tabs across the full content width, spread the
+     labels evenly, and give them one continuous baseline (per-tab box-shadow
+     underlines meet edge to edge). Nested language sub-tabs keep default sizing. */
+  .blog-post-content :global(> starlight-tabs > .tablist-wrapper ul[role='tablist']) {
+    display: flex;
+    width: 100%;
+    border-bottom: none;
+  }
+
+  .blog-post-content :global(> starlight-tabs > .tablist-wrapper ul[role='tablist'] > .tab) {
+    flex: 1;
+  }
+
+  .blog-post-content :global(> starlight-tabs > .tablist-wrapper ul[role='tablist'] > .tab > [role='tab']) {
+    display: block;
+    width: 100%;
+    text-align: center;
   }
 
   .blog-post-content :global(ul),
