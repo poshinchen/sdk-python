@@ -177,7 +177,9 @@ Each grouped tool-use message stays adjacent to its matching result message, eve
 
 Tool-result messages use `metadata["custom"]["bidi"]["kind"]` to distinguish `tool_dispatch` acknowledgements from `tool_result` messages.
 
-After the group finishes, the agent loop checks `request_state["stop_event_loop"]` to trigger graceful shutdown instead of sending tool results back to the model. Any tool can set this flag to stop the conversation. The SDK's experimental `stop` tool uses this mechanism.
+To let a tool end the conversation, call `tool_context.agent.cancel()`. Cancellation takes effect only after the tool group completes. Requests from other contexts remain pending until then.
+
+See [Graceful shutdown](./quickstart.mdx#graceful-shutdown) for a custom tool example.
 
 ### Connection Lifecycle
 

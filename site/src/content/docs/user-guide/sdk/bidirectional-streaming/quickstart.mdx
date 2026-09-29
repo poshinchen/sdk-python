@@ -406,22 +406,28 @@ See [Controlling Conversation Lifecycle](#controlling-conversation-lifecycle) fo
 
 ## Graceful Shutdown
 
-Use the SDK's experimental `stop` tool to allow users to end conversations
-naturally. It sets `request_state["stop_event_loop"]`, which the agent loop checks
-to trigger a graceful shutdown:
+To let users end a conversation by voice, define a tool that calls `agent.cancel()`:
 
 ```python
 import asyncio
+from strands import LocalAgent, ToolContext, tool
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.io import AudioIO
 from strands.experimental.bidi.models import BedrockNovaSonicModel
-from strands.experimental.tools import stop
+
+
+@tool(context=True)
+def end_conversation(tool_context: ToolContext[LocalAgent]) -> str:
+    """End the conversation when the user asks to stop."""
+    tool_context.agent.cancel()
+    return "Ending conversation"
+
 
 model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
 agent = BidiAgent(
     model=model,
-    tools=[stop],
-    system_prompt="You are a helpful assistant. When the user says 'stop conversation', use the stop tool."
+    tools=[end_conversation],
+    system_prompt="You are a helpful assistant.",
 )
 
 audio_io = AudioIO()
@@ -431,24 +437,12 @@ async def main():
         inputs=[audio_io.input()],
         outputs=[audio_io.output()]
     )
-    # Conversation ends when user says "stop conversation"
+    # run() returns after the agent calls end_conversation.
 
 asyncio.run(main())
 ```
 
-You can also create custom stop tools using the `request_state["stop_event_loop"]` flag:
-
-```python
-from strands import tool
-
-@tool
-def end_session(request_state: dict) -> str:
-    request_state["stop_event_loop"] = True
-    return "Goodbye!"
-```
-
-The agent will gracefully close the connection when any tool sets `request_state["stop_event_loop"] = True`.
-
+Bidi checks for cancellation after a tool group completes and its results are recorded. Requests from other contexts remain pending until that checkpoint.
 
 ## Debug Logs
 

@@ -6,7 +6,6 @@ The agent loop handles the events received from the model and executes tools whe
 import asyncio
 import logging
 import time
-import warnings
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -198,6 +197,8 @@ class _AgentLoop:
         self._model_task = self._task_pool.create(self._run_model(self._generation))
 
         self._invocation_state = invocation_state if invocation_state is not None else {}
+        # Retained for compatibility with shared tools that expect request_state.
+        self._invocation_state.setdefault("request_state", {})
         self._send_gate.set()
         self._started = True
 
@@ -741,7 +742,6 @@ class _AgentLoop:
 
     async def _run_tools(self, tool_uses: list[ToolUse]) -> None:
         """Execute a provider's tool group concurrently and send its results together."""
-        invocation_state = self._invocation_state
         try:
             async with _TaskGroup() as task_group:
                 tasks = [task_group.create_task(self._run_tool(tool_use)) for tool_use in tool_uses]
@@ -759,18 +759,8 @@ class _AgentLoop:
             await self._agent._append_messages(tool_use_message, tool_result_message)
             await self._event_queue.put(ToolResultMessageEvent(tool_result_message))
 
-            should_stop = invocation_state.get("request_state", {}).get("stop_event_loop", False)
-            if not should_stop and any(tool_use["name"] == "stop_conversation" for tool_use in tool_uses):
-                warnings.warn(
-                    "Stopping the event loop by tool name 'stop_conversation' is deprecated. "
-                    "Use request_state['stop_event_loop'] = True instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                should_stop = True
-
-            if should_stop:
-                logger.info("stop_event_loop=<True> | stopping conversation")
+            if self._agent.cancel_signal.is_set():
+                logger.info("cancellation requested | stopping conversation")
                 connection_id = getattr(self._agent.model, "_connection_id", "unknown")
                 await self._event_queue.put(BidiConnectionStopEvent(connection_id=connection_id, reason="user_request"))
                 return
@@ -803,11 +793,6 @@ class _AgentLoop:
 
         tool_results: list[ToolResult] = []
 
-        # Ensure request_state exists for tools like strands_tools.stop
-        invocation_state = self._invocation_state
-        if "request_state" not in invocation_state:
-            invocation_state["request_state"] = {}
-
         tool_call_span = self._tracer.start_tool_call_span(tool_use, parent_span=self._session_span)
         tool_result: ToolResult | None = None
         tool_error: Exception | None = None
@@ -817,7 +802,7 @@ class _AgentLoop:
                 self._agent,
                 tool_use,
                 tool_results,
-                invocation_state,
+                self._invocation_state,
                 structured_output_context=None,
             )
 
@@ -829,7 +814,6 @@ class _AgentLoop:
 
                 await self._event_queue.put(tool_event)
 
-            # Normal flow for all tools (including stop_conversation)
             tool_result_event = cast(ToolResultEvent, tool_event)
             tool_result = tool_result_event.tool_result
 

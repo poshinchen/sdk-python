@@ -2,7 +2,6 @@
 
 import asyncio
 import sys
-import threading
 import unittest.mock
 from contextlib import nullcontext
 from uuid import uuid4
@@ -18,6 +17,7 @@ from strands.experimental.bidi.types import (
     BidiConnectionStartEvent,
     BidiConnectionStopEvent,
     BidiMessage,
+    BidiToolUseBlocksEvent,
     BidiTranscriptDeltaEvent,
     BidiTranscriptStartEvent,
     InputStream,
@@ -313,12 +313,40 @@ def test_bidi_agent_sandbox_defaults_to_host_environment(mock_model):
     assert agent.sandbox is agent.sandbox
 
 
-def test_bidi_agent_cancel_signal_is_never_set(mock_model):
+def test_cancel_sets_signal(mock_model):
     agent = BidiAgent(model=mock_model)
+    signal = agent.cancel_signal
 
-    assert isinstance(agent.cancel_signal, threading.Event)
-    assert not agent.cancel_signal.is_set()
-    assert agent.cancel_signal is agent.cancel_signal
+    assert not signal.is_set()
+
+    agent.cancel()
+    agent.cancel()
+
+    assert signal.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_cancel_cleans_up_and_allows_reuse(mock_model):
+    @tool(context=True)
+    def end_conversation(tool_context: ToolContext[LocalAgent]) -> str:
+        """End the conversation."""
+        tool_context.agent.cancel()
+        return "Ending conversation"
+
+    mock_model.set_events(
+        [BidiToolUseBlocksEvent([{"toolUseId": "end", "name": end_conversation.tool_name, "input": {}}])]
+    )
+    agent = BidiAgent(model=mock_model, tools=[end_conversation])
+
+    for _ in range(2):
+        input_ = unittest.mock.AsyncMock(spec=InputStream, side_effect=asyncio.Queue().get)
+        output = unittest.mock.AsyncMock(spec=OutputStream)
+        await asyncio.wait_for(agent.run(inputs=[input_], outputs=[output]), 2)
+
+        input_.stop.assert_awaited_once()
+        output.stop.assert_awaited_once()
+        assert not agent.cancel_signal.is_set()
+        assert not mock_model._started
 
 
 def test_bidi_agent_tool_context_receives_cancel_signal(mock_model):

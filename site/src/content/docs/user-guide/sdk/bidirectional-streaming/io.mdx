@@ -88,12 +88,10 @@ Pass your I/O streams to the agent's `run()` method to connect them to the agent
 import asyncio
 
 from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.tools import stop
 
 
 async def main():
-    # stop tool allows user to verbally stop agent execution.
-    agent = BidiAgent(tools=[stop])
+    agent = BidiAgent()
     await agent.run(inputs=[MyInputStream()], outputs=[MyOutputStream()])
 
 
@@ -104,6 +102,8 @@ The `run()` method handles startup, execution, and shutdown for the agent and it
 streams. Inputs and outputs run concurrently, so you can mix and match implementations.
 If an I/O task fails, `run()` cancels the remaining tasks, stops the streams, and
 re-raises the exception.
+For a tool that lets users end the conversation, see
+[Graceful shutdown](./quickstart.mdx#graceful-shutdown).
 
 ## Audio I/O
 
@@ -126,12 +126,10 @@ import asyncio
 
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.io import AudioIO
-from strands.experimental.tools import stop
 
 
 async def main():
-    # stop tool allows user to verbally stop agent execution.
-    agent = BidiAgent(tools=[stop])
+    agent = BidiAgent()
     audio_io = AudioIO(input_device_index=1)
 
     await agent.run(
@@ -232,7 +230,6 @@ import asyncio
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.io import ConsoleIO
 from strands.experimental.bidi.models import OpenAIRealtimeModel
-from strands.experimental.tools import stop
 
 
 async def main():
@@ -241,7 +238,7 @@ async def main():
         transcription_model_id=None,
         params={"output_modalities": ["text"]},
     )
-    agent = BidiAgent(model=model, tools=[stop])
+    agent = BidiAgent(model=model)
     console_io = ConsoleIO()
 
     await agent.run(
@@ -280,11 +277,10 @@ import asyncio
 
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.io import AudioIO, ConsoleIO
-from strands.experimental.tools import stop
 
 
 async def main():
-    agent = BidiAgent(tools=[stop])
+    agent = BidiAgent()
     console_io = ConsoleIO(placeholder="Type or speak…")
     audio_io = AudioIO(console=console_io)
 

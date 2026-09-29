@@ -1,11 +1,10 @@
 import asyncio
 import unittest.mock
-import warnings
 
 import pytest
 import pytest_asyncio
 
-from strands import ToolContext, tool
+from strands import LocalAgent, ToolContext, tool
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.agent.loop import _ReaderError
 from strands.experimental.bidi.hooks import BidiAgentStopEvent, BidiBeforeConnectionRestartEvent
@@ -1869,120 +1868,87 @@ async def test_tool_exchanges_remain_paired_when_results_finish_out_of_order(str
 
 
 @pytest.mark.asyncio
-async def test_bidi_agent_loop_request_state_initialized_for_tools(loop, agent, agenerator):
-    """Test that request_state is initialized in invocation_state before tool execution.
-
-    This ensures request_state exists for tools that may need it via invocation_state,
-    even when invocation_state is not provided by the user.
-    """
-    tool_use = {"toolUseId": "t2", "name": "time_tool", "input": {}}
-    tool_use_event = BidiToolUseBlocksEvent([tool_use])
-
-    agent.model.receive = unittest.mock.Mock(return_value=agenerator([tool_use_event]))
-
-    # Start without providing invocation_state
-    await loop.start()
-
-    tru_events = []
-    async for event in loop.receive():
-        tru_events.append(event)
-        if len(tru_events) >= 3:
-            break
-
-    # Verify tool executed successfully
-    tool_result_event = tru_events[1]
-    assert isinstance(tool_result_event, ToolResultEvent)
-    assert tool_result_event.tool_result["status"] == "success"
-
-    # Verify request_state was initialized in invocation_state
-    assert "request_state" in loop._invocation_state
-    assert isinstance(loop._invocation_state["request_state"], dict)
-
-
-@pytest.mark.asyncio
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("cancel_source", ["tool", "hook"])
 @pytest.mark.parametrize("tool_count", [1, 2])
-async def test_bidi_agent_loop_stop_event_loop_flag(agent, agenerator, alist, tool_count):
-    """Complete the tool group before honoring the stop flag."""
-    loop = agent._loop
-    tool_uses = [{"toolUseId": f"call-{index}", "name": "time_tool", "input": {}} for index in range(tool_count)]
-    tool_use_event = BidiToolUseBlocksEvent(tool_uses)
-    agent.model.receive = unittest.mock.Mock(return_value=agenerator([tool_use_event]))
-    await loop.start(invocation_state={"request_state": {"stop_event_loop": True}})
+async def test_receive_cancel_after_tool(agent, agenerator, alist, retry, cancel_source, tool_count):
+    @tool(context=True)
+    def end_conversation(tool_context: ToolContext[LocalAgent]) -> str:
+        """End the conversation."""
+        if cancel_source == "tool":
+            tool_context.agent.cancel()
+        return "Ending conversation"
 
-    results = [
-        {"toolUseId": call["toolUseId"], "status": "success", "content": [{"text": "12:00"}]} for call in tool_uses
+    def after_tool(event: AfterToolCallEvent[LocalAgent]) -> None:
+        if cancel_source == "hook":
+            event.agent.cancel()
+        event.retry = retry
+
+    agent.tool_registry.register_tool(end_conversation)
+    agent.hooks.add_callback(AfterToolCallEvent, after_tool)
+
+    tool_uses = [
+        {"toolUseId": f"call-{index}", "name": end_conversation.tool_name, "input": {}} for index in range(tool_count)
     ]
-    tru_events = await alist(loop.receive())
+    tool_results = [
+        {"toolUseId": call["toolUseId"], "status": "success", "content": [{"text": "Ending conversation"}]}
+        for call in tool_uses
+    ]
+    tool_use_event = BidiToolUseBlocksEvent(tool_uses)
+
+    agent.model.receive = unittest.mock.Mock(return_value=agenerator([tool_use_event]))
+
+    async with agent:
+        tru_events = await asyncio.wait_for(alist(agent.receive()), 2)
+
+    exp_result_message = {
+        "role": "user",
+        "content": [{"toolResult": tool_result} for tool_result in tool_results],
+        "metadata": {"custom": {"bidi": {"kind": "tool_result"}}},
+        "tracking_id": unittest.mock.ANY,
+    }
     exp_events = [
         tool_use_event,
-        *[ToolResultEvent(result) for result in results],
-        ToolResultMessageEvent(
-            {
-                "role": "user",
-                "content": [{"toolResult": result} for result in results],
-                "metadata": {"custom": {"bidi": {"kind": "tool_result"}}},
-                "tracking_id": unittest.mock.ANY,
-            }
-        ),
-        BidiConnectionStopEvent(connection_id=unittest.mock.ANY, reason="user_request"),
+        *[ToolResultEvent(tool_result) for tool_result in tool_results],
+        ToolResultMessageEvent(exp_result_message),
+        BidiConnectionStopEvent(connection_id="unknown", reason="user_request"),
     ]
     assert tru_events == exp_events
-    agent.model.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_bidi_agent_loop_stop_conversation_deprecated_but_works(loop, agent, agenerator):
-    """Test that stop_conversation tool still works but emits a deprecation warning.
-
-    The stop_conversation tool is deprecated in favor of request_state["stop_event_loop"],
-    but should continue to work for backward compatibility via the name-based check.
-    """
-    from strands.experimental.bidi.tools import stop_conversation
-
-    agent.tool_registry.register_tool(stop_conversation)
-
-    tool_use = {"toolUseId": "t5", "name": "stop_conversation", "input": {}}
-    tool_use_event = BidiToolUseBlocksEvent([tool_use])
-
-    agent.model.receive = unittest.mock.Mock(return_value=agenerator([tool_use_event]))
-
-    await loop.start()
-
-    tru_events = []
-    with warnings.catch_warnings(record=True) as caught_warnings:
-        warnings.simplefilter("always")
-        async for event in loop.receive():
-            tru_events.append(event)
-
-    # Should receive: tool_use_event, tool_result_event, tool_result_message, connection_stop
-    assert len(tru_events) == 4
-
-    # Verify tool executed successfully
-    tool_result_event = tru_events[1]
-    assert isinstance(tool_result_event, ToolResultEvent)
-    assert tool_result_event.tool_result["status"] == "success"
-    assert "Ending conversation" in tool_result_event.tool_result["content"][0]["text"]
-
-    # Verify connection stop event was emitted
-    connection_stop_event = tru_events[3]
-    assert isinstance(connection_stop_event, BidiConnectionStopEvent)
-    assert connection_stop_event["reason"] == "user_request"
-
-    # Verify model.send was NOT called (tool result not sent to model)
+    assert agent.messages[-1] == exp_result_message
     agent.model.send.assert_not_called()
 
-    # Verify deprecation warnings were emitted (from both the tool itself and the loop name check)
-    deprecation_warnings = [w for w in caught_warnings if issubclass(w.category, DeprecationWarning)]
-    assert len(deprecation_warnings) >= 1
-    assert any("stop_conversation" in str(w.message).lower() for w in deprecation_warnings)
+
+@pytest.mark.asyncio
+async def test_receive_cancel_pending_until_tool_completes(streaming_agent, alist):
+    agent = streaming_agent
+    request = BidiToolUseBlocksEvent([{"toolUseId": "time", "name": "time_tool", "input": {}}])
+    audio = BidiAudioDeltaEvent("audio", "pcm", 24000, 1, content_id="audio")
+    reader = agent.receive()
+    try:
+        agent.cancel()
+        await agent.model.emit(audio)
+        assert await asyncio.wait_for(anext(reader), 2) == audio
+
+        await agent.model.emit(request)
+        tru_events = await asyncio.wait_for(alist(reader), 2)
+    finally:
+        await reader.aclose()
+
+    assert [type(event) for event in tru_events] == [
+        BidiToolUseBlocksEvent,
+        ToolResultEvent,
+        ToolResultMessageEvent,
+        BidiConnectionStopEvent,
+    ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invocation_state", [{}, {"custom_data": "preserved"}])
+@pytest.mark.parametrize(
+    "invocation_state", [{}, {"custom_data": "preserved"}, {"request_state": {"custom_data": "preserved"}}]
+)
 async def test_tools_share_invocation_state(agent, agenerator, invocation_state):
     """Tools, hooks, and the caller share state throughout the invocation."""
-    invocation_state = dict(invocation_state)
-    exp_state = {**invocation_state, "call_count": 2, "request_state": {}}
+    exp_state = {"request_state": {}, **invocation_state, "call_count": 2}
     tool_states = []
 
     @tool(context=True)
