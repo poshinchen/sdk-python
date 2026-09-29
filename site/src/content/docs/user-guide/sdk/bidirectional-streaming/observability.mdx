@@ -4,11 +4,10 @@ description: 'Trace, measure, and log BidiAgent sessions: connection lifecycle, 
 sidebar:
   label: "Observability"
 languages: Python
-experimental: true
 tags: [bidi-streaming, observability]
 sourceLinks:
-  - path: strands-py/src/strands/experimental/bidi/_telemetry.py
-  - path: strands-py/src/strands/experimental/bidi/agent/loop.py
+  - path: strands-py/src/strands/bidi/_telemetry.py
+  - path: strands-py/src/strands/bidi/agent/loop.py
 ---
 
 
@@ -31,9 +30,9 @@ pip install 'strands-agents[bidi,otel]'
 ```python
 import asyncio
 
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.types import BidiConnectionStartEvent
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.types import BidiConnectionStartEvent
+from strands.bidi.models import BedrockNovaSonicModel
 from strands.telemetry import StrandsTelemetry
 
 strands_telemetry = StrandsTelemetry()
@@ -278,7 +277,7 @@ Register a hook provider to accumulate session health counters:
 ```python
 import logging
 
-from strands.experimental.bidi.hooks import (
+from strands.bidi.hooks import (
     BidiAfterConnectionRestartEvent,
     BidiBargeInEvent,
 )
@@ -315,8 +314,8 @@ Traces record aggregate session tokens. The per-modality breakdown is only avail
 the event stream:
 
 ```python
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.types import BidiResponseStopEvent, BidiUsageEvent
+from strands.bidi.agent import BidiAgent
+from strands.bidi.types import BidiResponseStopEvent, BidiUsageEvent
 
 
 async def track_session(agent: BidiAgent) -> None:
@@ -357,7 +356,7 @@ behavior the trace does not explain, such as a tool call that never appears to e
 ```python
 import logging
 
-logging.getLogger("strands.experimental.bidi").setLevel(logging.DEBUG)
+logging.getLogger("strands.bidi").setLevel(logging.DEBUG)
 logging.basicConfig(
     format="%(levelname)s | %(name)s | %(message)s",
     handlers=[logging.StreamHandler()],
@@ -367,13 +366,13 @@ logging.basicConfig(
 A session that starts, calls a tool, and stops logs this:
 
 ```
-DEBUG | strands.experimental.bidi.agent.agent | context_manager=<enter> | starting agent
-DEBUG | strands.experimental.bidi.agent.agent | agent starting
-DEBUG | strands.experimental.bidi.agent.loop | agent loop starting
-DEBUG | strands.experimental.bidi.agent.loop | model task starting
-DEBUG | strands.experimental.bidi.agent.loop | tool_name=<get_weather> | tool execution starting
-DEBUG | strands.experimental.bidi.agent.agent | context_manager=<exit> | stopping agent
-DEBUG | strands.experimental.bidi.agent.loop | agent loop stopping
+DEBUG | strands.bidi.agent.agent | context_manager=<enter> | starting agent
+DEBUG | strands.bidi.agent.agent | agent starting
+DEBUG | strands.bidi.agent.loop | agent loop starting
+DEBUG | strands.bidi.agent.loop | model task starting
+DEBUG | strands.bidi.agent.loop | tool_name=<get_weather> | tool execution starting
+DEBUG | strands.bidi.agent.agent | context_manager=<exit> | stopping agent
+DEBUG | strands.bidi.agent.loop | agent loop stopping
 ```
 
 Audio and transcript chunks are not logged, since a minute of conversation produces
@@ -465,4 +464,4 @@ Each provider emits one span per response. Usage details vary by provider:
 - [Events](events.md) - Complete guide to bidirectional streaming events
 - [Hooks](hooks.md) - Extend agent functionality with hooks
 - [Barge-in](barge-in.md) - How barge-in detection works
-- [Python API Reference](@api/python/strands.experimental.bidi.agent) - Complete API documentation
+- [Python API Reference](@api/python/strands.bidi.agent) - Complete API documentation

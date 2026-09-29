@@ -1,15 +1,14 @@
 ---
 title: Events
 description: 'Send and receive bidirectional streaming events in Strands agents. Process audio, text, and tool activity in real time over persistent connections.'
-experimental: true
 tags: [bidi-streaming]
 sourceLinks:
-  - path: strands-py/src/strands/experimental/bidi/types/agent.py
-  - path: strands-py/src/strands/experimental/bidi/types/content.py
-  - path: strands-py/src/strands/experimental/bidi/types/media.py
+  - path: strands-py/src/strands/bidi/types/agent.py
+  - path: strands-py/src/strands/bidi/types/content.py
+  - path: strands-py/src/strands/bidi/types/media.py
   - path: strands-py/src/strands/types/content.py
-  - path: strands-py/src/strands/experimental/bidi/types/events.py
-  - path: strands-py/src/strands/experimental/bidi/types/io.py
+  - path: strands-py/src/strands/bidi/types/events.py
+  - path: strands-py/src/strands/bidi/types/io.py
   - path: strands-py/src/strands/types/media.py
 ---
 
@@ -35,8 +34,8 @@ Bidirectional streaming uses a different event model than [standard streaming](.
 
 ```python
 import asyncio
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.models import BedrockNovaSonicModel
 
 async def main():
     model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
@@ -84,7 +83,7 @@ determines the sample rate and channel count for real-time PCM audio.
 ```python
 from pathlib import Path
 
-from strands.experimental.bidi.types import AudioDelta
+from strands.bidi.types import AudioDelta
 
 audio_bytes = Path("audio-chunk.pcm").read_bytes()
 
@@ -427,8 +426,8 @@ Use deltas for live updates and block events for completed text, reasoning, and
 transcripts. This function reads completed content from a started agent:
 
 ```python
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.types import (
+from strands.bidi.agent import BidiAgent
+from strands.bidi.types import (
     BidiReasoningBlockEvent,
     BidiTextBlockEvent,
     BidiTranscriptBlockEvent,
@@ -558,9 +557,9 @@ Emitted periodically to report token usage with modality breakdown.
 
 ```python
 import asyncio
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.io import AudioIO
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.io import AudioIO
+from strands.bidi.models import BedrockNovaSonicModel
 
 async def main():
     model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
@@ -595,8 +594,8 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.models import BedrockNovaSonicModel
 
 async def main():
     model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
@@ -615,8 +614,8 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.models import BedrockNovaSonicModel
 from strands.vended_tools import notebook
 
 async def main():
@@ -644,8 +643,8 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.models import BedrockNovaSonicModel
 
 async def main():
     model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
@@ -670,8 +669,8 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi.agent import BidiAgent
+from strands.bidi.models import BedrockNovaSonicModel
 
 async def main():
     model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")  # 8-minute timeout
