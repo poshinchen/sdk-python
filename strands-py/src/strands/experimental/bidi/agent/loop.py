@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from opentelemetry.trace import Span
 
 from ....telemetry.tracer import get_tracer
-from ....types._events import ToolInterruptEvent, ToolResultEvent, ToolResultMessageEvent, ToolUseStreamEvent
+from ....types._events import ToolInterruptEvent, ToolResultEvent, ToolResultMessageEvent
 from ....types.content import ContentBlock, Message
 from ....types.tools import ToolResult, ToolResultBlock, ToolUse
 from .. import _telemetry
-from .._async import _TaskPool, stop_all
+from .._async import _TaskGroup, _TaskPool, stop_all
 from ..hooks.events import (
     BidiAfterConnectionRestartEvent,
     BidiAgentStopEvent,
@@ -47,6 +47,7 @@ from ..types.events import (
     BidiTextDeltaEvent,
     BidiTextStartEvent,
     BidiTextStopEvent,
+    BidiToolUseBlocksEvent,
     BidiTranscriptDeltaEvent,
     BidiTranscriptStartEvent,
     BidiTranscriptStopEvent,
@@ -653,25 +654,32 @@ class _AgentLoop:
                     await self._agent._update_message(block.to_message())
                     output_events.append(block.to_event())
 
-                elif isinstance(event, ToolUseStreamEvent):
-                    tool_use = event["current_tool_use"]
-                    dispatch: ToolResult = {
-                        "toolUseId": tool_use["toolUseId"],
-                        "status": "success",
-                        "content": [{"text": "Tool call started. Its result will follow in a separate tool exchange."}],
+                elif isinstance(event, BidiToolUseBlocksEvent):
+                    tool_use_message: Message = {
+                        "role": "assistant",
+                        "content": [{"toolUse": tool_use} for tool_use in event.tool_uses],
                     }
-                    await self._agent._append_messages(
-                        {"role": "assistant", "content": [{"toolUse": tool_use}]},
-                        {
-                            "role": "user",
-                            "content": [{"toolResult": dispatch}],
-                            "metadata": {
-                                "custom": {
-                                    "bidi": BidiToolMetadata(kind="tool_dispatch", tool_use_id=tool_use["toolUseId"])
+                    tool_result_message: Message = {
+                        "role": "user",
+                        "content": [
+                            {
+                                "toolResult": {
+                                    "toolUseId": tool_use["toolUseId"],
+                                    "status": "success",
+                                    "content": [
+                                        {
+                                            "text": (
+                                                "Tool call started. Its result will follow in a separate tool exchange."
+                                            )
+                                        }
+                                    ],
                                 }
-                            },
-                        },
-                    )
+                            }
+                            for tool_use in event.tool_uses
+                        ],
+                        "metadata": {"custom": {"bidi": BidiToolMetadata(kind="tool_dispatch")}},
+                    }
+                    await self._agent._append_messages(tool_use_message, tool_result_message)
 
                 elif isinstance(event, BidiBargeInEvent):
                     if self._session_span:
@@ -709,8 +717,8 @@ class _AgentLoop:
                     if generation != self._generation:
                         return
 
-                if isinstance(event, ToolUseStreamEvent):
-                    self._task_pool.create(self._run_tool(event["current_tool_use"]))
+                if isinstance(event, BidiToolUseBlocksEvent):
+                    self._task_pool.create(self._run_tools(event.tool_uses))
 
         except Exception as error:
             model_error = error
@@ -731,11 +739,65 @@ class _AgentLoop:
                 )
                 response_span = None
 
-    async def _run_tool(self, tool_use: ToolUse) -> None:
+    async def _run_tools(self, tool_uses: list[ToolUse]) -> None:
+        """Execute a provider's tool group concurrently and send its results together."""
+        invocation_state = self._invocation_state
+        try:
+            async with _TaskGroup() as task_group:
+                tasks = [task_group.create_task(self._run_tool(tool_use)) for tool_use in tool_uses]
+
+            tool_results = [task.result() for task in tasks]
+            tool_use_message: Message = {
+                "role": "assistant",
+                "content": [{"toolUse": tool_use} for tool_use in tool_uses],
+            }
+            tool_result_message: Message = {
+                "role": "user",
+                "content": [{"toolResult": tool_result} for tool_result in tool_results],
+                "metadata": {"custom": {"bidi": BidiToolMetadata(kind="tool_result")}},
+            }
+            await self._agent._append_messages(tool_use_message, tool_result_message)
+            await self._event_queue.put(ToolResultMessageEvent(tool_result_message))
+
+            should_stop = invocation_state.get("request_state", {}).get("stop_event_loop", False)
+            if not should_stop and any(tool_use["name"] == "stop_conversation" for tool_use in tool_uses):
+                warnings.warn(
+                    "Stopping the event loop by tool name 'stop_conversation' is deprecated. "
+                    "Use request_state['stop_event_loop'] = True instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                should_stop = True
+
+            if should_stop:
+                logger.info("stop_event_loop=<True> | stopping conversation")
+                connection_id = getattr(self._agent.model, "_connection_id", "unknown")
+                await self._event_queue.put(BidiConnectionStopEvent(connection_id=connection_id, reason="user_request"))
+                return
+
+            await self.send(
+                BidiMessage(
+                    content=[
+                        ToolResultBlock(
+                            tool_use_id=result["toolUseId"],
+                            status=result["status"],
+                            content=result["content"],
+                        )
+                        for result in tool_results
+                    ]
+                )
+            )
+        except Exception as error:
+            await self._event_queue.put(error)
+
+    async def _run_tool(self, tool_use: ToolUse) -> ToolResult:
         """Task for running tool requested by the model using the tool executor.
 
         Args:
             tool_use: Tool use request from model.
+
+        Returns:
+            The tool result.
         """
         logger.debug("tool_name=<%s> | tool execution starting", tool_use["name"])
 
@@ -771,57 +833,11 @@ class _AgentLoop:
             tool_result_event = cast(ToolResultEvent, tool_event)
             tool_result = tool_result_event.tool_result
 
-            tool_use_message: Message = {
-                "role": "assistant",
-                "content": [{"toolUse": tool_use}],
-            }
-            tool_result_message: Message = {
-                "role": "user",
-                "content": [{"toolResult": tool_result}],
-                "metadata": {
-                    "custom": {"bidi": BidiToolMetadata(kind="tool_result", tool_use_id=tool_use["toolUseId"])}
-                },
-            }
-            await self._agent._append_messages(tool_use_message, tool_result_message)
-
-            await self._event_queue.put(ToolResultMessageEvent(tool_result_message))
-
-            # Check for stop_event_loop flag (set by strands_tools.stop, stop_conversation, or any custom tool)
-            request_state = invocation_state.get("request_state", {})
-            should_stop = request_state.get("stop_event_loop", False)
-
-            # Backward compatibility: also check for stop_conversation by name (deprecated)
-            if not should_stop and tool_use["name"] == "stop_conversation":
-                warnings.warn(
-                    "Stopping the event loop by tool name 'stop_conversation' is deprecated. "
-                    "Use request_state['stop_event_loop'] = True instead.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                should_stop = True
-
-            if should_stop:
-                logger.info("stop_event_loop=<True> | stopping conversation")
-                connection_id = getattr(self._agent.model, "_connection_id", "unknown")
-                await self._event_queue.put(BidiConnectionStopEvent(connection_id=connection_id, reason="user_request"))
-                return  # Skip sending result to model
-
-            # Send result to model
-            await self.send(
-                BidiMessage(
-                    content=[
-                        ToolResultBlock(
-                            tool_use_id=tool_result["toolUseId"],
-                            status=tool_result["status"],
-                            content=tool_result["content"],
-                        )
-                    ]
-                )
-            )
+            return tool_result
 
         except Exception as error:
             tool_error = error
-            await self._event_queue.put(error)
+            raise
         finally:
             # Single end site ensures the span is closed even on cancellation.
             self._tracer.end_tool_call_span(tool_call_span, tool_result=tool_result, error=tool_error)
