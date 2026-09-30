@@ -351,7 +351,7 @@ async def test_receive_barge_in_does_not_wait_for_transcription(agent, agenerato
     complete_a = BidiResponseStopEvent("a")
     start_b = BidiResponseStartEvent("b")
     audio_b = BidiAudioDeltaEvent("cancelled", "pcm", 24000, 1, content_id="audio")
-    barge_in = BidiBargeInEvent("user_speech")
+    barge_in = BidiBargeInEvent()
     complete_b = BidiResponseStopEvent("b")
     transcript = BidiTranscriptBlockEvent("Earlier question.", "user", content_id="speech-a")
     native_events = [
@@ -374,7 +374,7 @@ async def test_receive_barge_in_does_not_wait_for_transcription(agent, agenerato
         exp_events = [*native_events[:4], transcript, *native_events[4:]]
         tru_events = [await asyncio.wait_for(anext(reader), 1) for _ in exp_events]
         assert tru_events == exp_events
-        assert hooks.events_received == [BidiBargeInHookEvent(agent=agent, reason="user_speech")]
+        assert hooks.events_received == [BidiBargeInHookEvent(agent=agent)]
     finally:
         await reader.aclose()
         await agent.stop()
@@ -573,7 +573,7 @@ async def test_model_processes_transcripts_before_consumer_reads(loop, agent, ag
     "stream_event,hook_type",
     [
         (BidiResponseStopEvent(response_id="r1"), BidiResponseStopHookEvent),
-        (BidiBargeInEvent(reason="user_speech"), BidiBargeInHookEvent),
+        (BidiBargeInEvent(), BidiBargeInHookEvent),
         (BidiTranscriptStartEvent(role="assistant", content_id="assistant-transcript"), MessageAddedEvent),
     ],
 )
@@ -706,7 +706,7 @@ async def test_agent_stop_hook(agent, agenerator, cleanup_fails):
 @pytest.mark.asyncio
 async def test_bidi_agent_loop_receive_restart_connection(loop, agent, agenerator):
     timeout_error = ConnectionTimeoutError("test timeout", test_restart_config=1)
-    close_event = BidiConnectionStopEvent(connection_id="test", reason="complete")
+    close_event = BidiConnectionStopEvent(connection_id="test", reason="user_request")
 
     agent.model.receive = unittest.mock.Mock(side_effect=[timeout_error, agenerator([close_event])])
 
@@ -762,7 +762,7 @@ async def test_bidi_agent_loop_auto_reconnect_default_on(loop, agent, agenerator
     # An empty connection config uses the default restart behavior.
     agent.model.get_connection_config.return_value = {}
     timeout_error = ConnectionTimeoutError("test timeout")
-    close_event = BidiConnectionStopEvent(connection_id="test", reason="complete")
+    close_event = BidiConnectionStopEvent(connection_id="test", reason="user_request")
     agent.model.receive = unittest.mock.Mock(side_effect=[timeout_error, agenerator([close_event])])
 
     await loop.start()
@@ -992,7 +992,7 @@ async def test_restart_fences_superseded_reader_stream_close_error():
 
     await loop.start()
 
-    first = BidiConnectionStopEvent(connection_id="first", reason="complete")
+    first = BidiConnectionStopEvent(connection_id="first", reason="user_request")
     await model.emit(first)
     assert await loop._event_queue.get() is first
 
@@ -1001,7 +1001,7 @@ async def test_restart_fences_superseded_reader_stream_close_error():
     await loop._restart_connection(None, loop._generation)
     assert model.restart_calls == 1
 
-    second = BidiConnectionStopEvent(connection_id="second", reason="complete")
+    second = BidiConnectionStopEvent(connection_id="second", reason="user_request")
     await model.emit(second)
     # The new connection's event arrives; a leaked OSError would have surfaced here instead.
     assert await loop._event_queue.get() is second
@@ -1062,7 +1062,7 @@ async def test_stale_reader_error_is_dropped_not_raised(loop, agent, agenerator)
     # An error raised on a superseded (older) generation.
     await loop._event_queue.put(_ReaderError(loop._generation - 1, OSError("stale connection error")))
 
-    sentinel = BidiConnectionStopEvent(connection_id="after-stale-error", reason="complete")
+    sentinel = BidiConnectionStopEvent(connection_id="after-stale-error", reason="user_request")
     feed = asyncio.create_task(_feed_after_drain(loop, sentinel))
     # receive() must drop the stale error and go on to the next event, not raise it.
     result = await asyncio.wait_for(loop.receive().__anext__(), timeout=2.0)
@@ -1102,7 +1102,7 @@ async def test_stale_reactive_timeout_dropped_after_proactive_swap(loop, agent, 
     # A timeout tagged with the pre-swap generation is now stale; receive() must drop it.
     await loop._event_queue.put(_ReaderError(stale_generation, ConnectionTimeoutError("stale timeout")))
 
-    sentinel = BidiConnectionStopEvent(connection_id="after-stale-timeout", reason="complete")
+    sentinel = BidiConnectionStopEvent(connection_id="after-stale-timeout", reason="user_request")
     feed = asyncio.create_task(_feed_after_drain(loop, sentinel))
     result = await asyncio.wait_for(loop.receive().__anext__(), timeout=2.0)
     assert result is sentinel

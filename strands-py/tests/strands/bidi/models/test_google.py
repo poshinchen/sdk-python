@@ -923,7 +923,7 @@ async def test_event_conversion(mock_genai_client, model, live_message, server_c
 
     barge_in_events = model._convert_gemini_live_event(mock_barge_in, turn_state)
     assert barge_in_events == [
-        BidiBargeInEvent(reason="user_speech"),
+        BidiBargeInEvent(),
         BidiAudioStopEvent(content_id=unittest.mock.ANY),
     ]
 
@@ -1049,7 +1049,7 @@ def test_barge_in_emitted_alongside_other_server_content(model, complete_with_ou
     tru_events = [event for message in messages for event in model._convert_gemini_live_event(message, turn_state)]
     exp_events = [
         BidiResponseStartEvent(unittest.mock.ANY),
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         BidiTranscriptStartEvent("assistant", content_id=unittest.mock.ANY),
         BidiTranscriptDeltaEvent("partial reply", "assistant", content_id=unittest.mock.ANY),
         BidiTranscriptStopEvent("assistant", content_id=unittest.mock.ANY),
@@ -1098,7 +1098,7 @@ async def test_barge_in_preserves_user_transcription_already_in_progress(
         turn_state,
     )
     exp_events = [
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         BidiTranscriptDeltaEvent(" second", "user", started[0].content_id),
     ]
     assert tru_events == exp_events
@@ -1150,7 +1150,7 @@ def test_transcription_fragments_complete_at_turn_boundary(model):
             True,
             [{"interrupted": True}, {"turn_complete": True}],
             [
-                BidiBargeInEvent(reason="user_speech"),
+                BidiBargeInEvent(),
                 BidiTranscriptStopEvent("user", content_id=unittest.mock.ANY),
                 BidiResponseStopEvent("r1"),
             ],
@@ -1160,7 +1160,7 @@ def test_transcription_fragments_complete_at_turn_boundary(model):
             True,
             [{"interrupted": True, "turn_complete": True}],
             [
-                BidiBargeInEvent(reason="user_speech"),
+                BidiBargeInEvent(),
                 BidiTranscriptStopEvent("user", content_id=unittest.mock.ANY),
                 BidiResponseStopEvent("r1"),
             ],
@@ -1353,7 +1353,7 @@ def test_audio_stops_once_at_generation_boundary(model, live_message, server_con
         BidiAudioDeltaEvent("Zmlyc3Q=", format="pcm", sample_rate=24000, channels=1, content_id=content_id),
     ]
     if ending == "interrupted":
-        exp_events.append(BidiBargeInEvent(reason="user_speech"))
+        exp_events.append(BidiBargeInEvent())
     exp_events.extend(
         [
             BidiAudioDeltaEvent("bGFzdA==", format="pcm", sample_rate=24000, channels=1, content_id=content_id),
@@ -1390,7 +1390,7 @@ async def test_turn_complete_without_open_response_emits_nothing(
     tru_events.extend(
         model._convert_gemini_live_event(live_message(server_content=server_content(turn_complete=True)), turn_state)
     )
-    exp_events = [BidiBargeInEvent("user_speech")] if interrupted else []
+    exp_events = [BidiBargeInEvent()] if interrupted else []
     assert tru_events == exp_events
 
 
@@ -1413,7 +1413,7 @@ async def test_barge_in_completes_at_turn_boundary(
 
     events = model._convert_gemini_live_event(live_message(server_content=server_content(interrupted=True)), turn_state)
 
-    assert events == [BidiBargeInEvent(reason="user_speech")]
+    assert events == [BidiBargeInEvent()]
     assert turn_state.response_id is not None
 
     tru_events = model._convert_gemini_live_event(

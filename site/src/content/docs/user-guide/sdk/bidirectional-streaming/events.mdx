@@ -219,12 +219,7 @@ Emitted when the streaming connection is closed.
 **Properties:**
 
 - `connection_id`: Unique identifier for this streaming connection
-- `reason`: Why the connection closed
-  - `"client_disconnect"`: Client disconnected
-  - `"timeout"`: Connection timed out
-  - `"error"`: Error occurred
-  - `"complete"`: Conversation completed normally
-  - `"user_request"`: Cancellation requested through `agent.cancel()`
+- `reason`: Why the connection closed. Always `"user_request"`, emitted once a cancellation requested through `agent.cancel()` takes effect.
 
 ### Response Lifecycle Events
 
@@ -469,22 +464,15 @@ Signals a barge-in that stops response generation or playback, typically when th
 
 ```python
 {
-    "type": "bidi_barge_in",
-    "reason": "user_speech"
+    "type": "bidi_barge_in"
 }
 ```
-
-**Properties:**
-
-- `reason`: Why response output should stop
-  - `"user_speech"`: User started speaking (most common)
-  - `"error"`: Error stopped output
 
 **Usage:**
 ```python
 async for event in agent.receive():
     if event["type"] == "bidi_barge_in":
-        print(f"Barge-in: {event['reason']}")
+        print("Barge-in detected")
         # Audio output automatically cleared
         # Model ready for new input
 ```

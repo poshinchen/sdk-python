@@ -662,7 +662,7 @@ def test_barge_in_closes_response_before_next_turn(nova_model, role):
 
     tru_events = nova_model._convert_nova_event({"contentEnd": {"type": "TEXT", "stopReason": "INTERRUPTED"}}, state)
     exp_events = [
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         BidiTranscriptStopEvent(role, "t1"),
         BidiResponseStopEvent("r1"),
     ]
@@ -756,7 +756,7 @@ def test_response_after_barge_in_finishes_before_next_user_transcript(nova_model
             assert response_state.generation_stage == "FINAL"
         elif native_event.get("contentEnd", {}).get("contentId") == "control":
             assert events == [
-                BidiBargeInEvent("user_speech"),
+                BidiBargeInEvent(),
                 *([BidiAudioStopEvent(content_id=ANY)] if final_fragments else []),
                 BidiTranscriptStopEvent("assistant", content_id="t1"),
                 BidiResponseStopEvent("r1"),
@@ -767,7 +767,7 @@ def test_response_after_barge_in_finishes_before_next_user_transcript(nova_model
             assert events == []
     exp_events = [
         *([BidiAudioStartEvent(content_id=ANY)] if final_fragments else []),
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         *([BidiAudioStopEvent(content_id=ANY)] if final_fragments else []),
         BidiTranscriptStopEvent("assistant", content_id="t1"),
         BidiResponseStopEvent("r1"),
@@ -787,7 +787,7 @@ def test_barge_in_after_response_stop_only_stops_playback(nova_model):
     tru_events = nova_model._convert_nova_event(
         {"contentEnd": {"type": "TEXT", "stopReason": "INTERRUPTED"}}, response_state
     )
-    exp_events = [BidiBargeInEvent("user_speech")]
+    exp_events = [BidiBargeInEvent()]
     assert tru_events == exp_events
     assert response_state == _ResponseState()
     assert not response_state.idle.is_set()
@@ -1499,7 +1499,7 @@ def test_audio_stream_preserves_content_id(nova_model, interrupted):
             BidiAudioStartEvent(content_id),
             BidiAudioDeltaEvent("YQ==", "pcm", 16000, 1, content_id),
             BidiAudioDeltaEvent("Yg==", "pcm", 16000, 1, content_id),
-            *([BidiBargeInEvent("user_speech")] if interrupted else []),
+            *([BidiBargeInEvent()] if interrupted else []),
             BidiAudioStopEvent(content_id),
             BidiResponseStopEvent(ANY),
         ]

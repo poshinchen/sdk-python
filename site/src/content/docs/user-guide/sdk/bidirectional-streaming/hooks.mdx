@@ -204,7 +204,7 @@ This section contains practical hook implementations for common use cases.
 
 ### Tracking barge-ins
 
-Count barge-ins and record their reasons:
+Count barge-ins:
 
 ```python
 from strands.bidi.agent import BidiAgent
@@ -221,7 +221,7 @@ class BargeInTracker:
 
     async def on_barge_in(self, event: BidiBargeInEvent) -> None:
         self.barge_in_count += 1
-        print(f"Barge-in #{self.barge_in_count}: {event.reason}")
+        print(f"Barge-in #{self.barge_in_count}")
 
 
 tracker = BargeInTracker()

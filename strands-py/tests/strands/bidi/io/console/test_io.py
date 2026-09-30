@@ -179,7 +179,7 @@ async def test_output_connection_stop_flushes_partial_content(console, output_st
     await output_stream(BidiTextStartEvent("text"))
     await output_stream(BidiTextDeltaEvent("Partial", "text"))
 
-    await output_stream(BidiConnectionStopEvent("connection", reason="complete"))
+    await output_stream(BidiConnectionStopEvent("connection", reason="user_request"))
 
     assert capsys.readouterr().out.strip() == "Partial"
     assert not console._display.blocks

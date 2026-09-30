@@ -165,8 +165,7 @@ agents. See [Tool-Level Attributes](../observability-evaluation/traces.md#tool-l
 
 ### Barge-in events
 
-A barge-in is recorded as a `bidi_barge_in` event on the session span with a
-`barge_in.reason` attribute.
+A barge-in is recorded as a `bidi_barge_in` event on the session span.
 
 To count barge-ins, query the session span's `bidi_barge_in` events. Keeping the
 event on the session also captures barge-ins between response spans. For detection
@@ -211,9 +210,7 @@ The console exporter is the fastest way to confirm spans are being produced. A s
         {
             "name": "bidi_barge_in",
             "timestamp": "2026-08-10T13:27:28.100000Z",
-            "attributes": {
-                "barge_in.reason": "user_speech"
-            }
+            "attributes": {}
         }
     ],
     "links": []

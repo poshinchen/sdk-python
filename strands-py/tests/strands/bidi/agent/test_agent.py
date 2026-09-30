@@ -80,7 +80,7 @@ class MockBidiModel(BidiModel):
             yield event
 
         # Yield connection end event
-        yield BidiConnectionStopEvent(connection_id=self._connection_id, reason="complete")
+        yield BidiConnectionStopEvent(connection_id=self._connection_id, reason="user_request")
 
     def set_events(self, events):
         """Helper to set events this mock model will yield."""
@@ -629,7 +629,7 @@ async def test_bidi_agent_receive_events_from_model(agent, events):
     exp_events = [
         BidiConnectionStartEvent(connection_id=unittest.mock.ANY, model=unittest.mock.ANY),
         *events,
-        BidiConnectionStopEvent(connection_id=unittest.mock.ANY, reason="complete"),
+        BidiConnectionStopEvent(connection_id=unittest.mock.ANY, reason="user_request"),
     ]
 
     await agent.start()

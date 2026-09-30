@@ -60,8 +60,6 @@ from .model import AudioCapable, BidiModel, ConnectionTimeoutError
 
 logger = logging.getLogger(__name__)
 
-# Test idle_timeout_ms
-
 # OpenAI Realtime API configuration
 OPENAI_MAX_TIMEOUT_S = 3000  # 50 minutes
 """Max timeout before closing connection.
@@ -209,7 +207,9 @@ class OpenAIRealtimeModel(BidiModel, AudioCapable):
             api_key: OpenAI API key. Defaults to ``OPENAI_API_KEY``.
             organization: OpenAI organization. Defaults to ``OPENAI_ORGANIZATION``.
             project: OpenAI project. Defaults to ``OPENAI_PROJECT``.
-            timeout_s: Maximum connection duration in seconds.
+            timeout_s: Maximum connection duration in seconds. Unless ``connection.restart_after_s`` is
+                set, the agent restarts the connection 5 minutes before this limit, so a value of 300 or
+                less disables the proactive restart.
             voice: Output voice identifier. Defaults to ``alloy``.
             **model_config: Model configuration.
 
@@ -594,7 +594,7 @@ class OpenAIRealtimeModel(BidiModel, AudioCapable):
         state = state if state is not None else self._session_state
 
         if event_type == "input_audio_buffer.speech_started":
-            events: list[BidiOutputEvent] = [BidiBargeInEvent(reason="user_speech")]
+            events: list[BidiOutputEvent] = [BidiBargeInEvent()]
             if state.transcription_enabled:
                 events.extend(state.start_transcript("user", openai_event["item_id"]))
             return events

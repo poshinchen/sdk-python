@@ -1,17 +1,4 @@
-"""Bidirectional streaming model interface.
-
-Defines the abstract interface for models that support real-time bidirectional
-communication with persistent connections. Unlike traditional request-response
-models, bidirectional models maintain an open connection for streaming audio,
-text, and tool interactions.
-
-Features:
-
-- Persistent connection management with connect/close lifecycle
-- Real-time bidirectional communication (send and receive simultaneously)
-- Provider-agnostic event normalization
-- Support for audio, text, image, and tool result streaming
-"""
+"""Bidirectional streaming model interface: start a persistent connection, send and receive concurrently, then stop."""
 
 import abc
 import logging
@@ -113,7 +100,7 @@ class BidiModel(Model, abc.ABC):
 
         Terminates the active bidirectional connection and cleans up any associated
         resources such as network connections, buffers, or background tasks. After
-        calling close(), the model instance cannot be used until start() is called again.
+        calling stop(), the model instance cannot be used until start() is called again.
         """
         pass
 

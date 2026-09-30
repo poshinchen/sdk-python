@@ -434,10 +434,17 @@ class BidiAgent(LocalAgent):
 
         Yields:
             Model output events processed by background tasks including audio output,
-            text responses, tool calls, and connection updates.
+            text responses, tool calls, and connection updates. The agent also yields:
+
+            - A completed ``BidiTextBlockEvent``, ``BidiReasoningBlockEvent``, or
+              ``BidiTranscriptBlockEvent`` after each text, reasoning, or transcript stop event.
+            - Tool execution events such as ``ToolStreamEvent`` and ``ToolResultEvent``, and a
+              ``ToolResultMessageEvent`` once a tool group's results are recorded.
 
         Raises:
             RuntimeError: If start has not been called.
+            ConnectionTimeoutError: If the model connection times out and automatic restart is
+                disabled.
         """
         if not self._started:
             raise RuntimeError("agent not started | call start before receiving")

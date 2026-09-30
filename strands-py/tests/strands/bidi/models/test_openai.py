@@ -848,7 +848,7 @@ async def test_event_conversion(model):
     speech_started = {"type": "input_audio_buffer.speech_started", "item_id": "speech"}
     tru_events = model._convert_openai_event(speech_started)
     exp_events = [
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         BidiTranscriptStartEvent("user", "speech"),
     ]
     assert tru_events == exp_events
@@ -1251,7 +1251,7 @@ async def test_disabled_transcription_does_not_associate_audio_with_missing_tran
     ]
     tru_events = [event for native in native_events for event in model._convert_openai_event(native) or []]
     exp_events = [
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         BidiResponseStartEvent("a"),
         BidiResponseStartEvent("b"),
     ]
@@ -2000,7 +2000,7 @@ async def test_native_acknowledgments_correlate_inputs_and_late_transcripts(mode
         if event == BidiResponseStopEvent("b"):
             break
     assert tru_events == [
-        BidiBargeInEvent("user_speech"),
+        BidiBargeInEvent(),
         BidiTranscriptStartEvent("user", content_id="speech"),
         BidiResponseStartEvent("a"),
         BidiResponseStopEvent("a"),
@@ -2046,7 +2046,7 @@ async def test_receive_defers_response_during_speech(model, mock_websocket, bloc
     reader = model.receive()
     try:
         await anext(reader)
-        assert await anext(reader) == BidiBargeInEvent("user_speech")
+        assert await anext(reader) == BidiBargeInEvent()
 
         await model.send(BidiMessage(content=[block]))
         mock_websocket.send.assert_awaited_once()
