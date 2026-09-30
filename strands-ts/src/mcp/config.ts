@@ -44,7 +44,7 @@ export interface McpServerConfig {
   disabled?: boolean
   /** When true, skip config/connection failures and overlong prefixed names during tool listing with warnings. */
   continueOnError?: boolean
-  /** Configuration for automatic task execution on modern and legacy MCP servers. */
+  /** Configuration for automatic execution of legacy (2025-11-25) MCP task tools. Experimental: subject to change. */
   tasksConfig?: TasksConfig
 }
 

@@ -92,6 +92,9 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
 /**
  * Configuration for MCP task execution.
  *
+ * MCP Tasks are experimental in both the MCP specification and this SDK. The API may
+ * change without notice in future versions.
+ *
  * `pollTimeout` bounds the complete automatic operation, including polling and input
  * callbacks. `requestTimeout` limits each individual lifecycle request; progress resets
  * it. The first limit reached ends the wait. A call's `options.timeoutMs` overrides
@@ -102,7 +105,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
  * legacy wire time-to-live is sent.
  */
 export interface TasksConfig {
-  /** Overall deadline in milliseconds for an automatic task operation, both protocol eras. Defaults to 300000. */
+  /** Overall deadline in milliseconds for an automatic task operation. Defaults to 300000. */
   pollTimeout?: number
 
   /** Timeout in milliseconds for each task lifecycle request; progress resets it. Defaults to 60000. */
@@ -155,11 +158,23 @@ export class McpTaskCancelledError extends Error {
   }
 }
 
+/** Error thrown when a server reports a task as failed. */
+export class McpTaskFailedError extends Error {
+  /** Optional server-provided context for the failure. */
+  public readonly statusMessage: string | undefined
+
+  public constructor(statusMessage?: string) {
+    super(statusMessage ? `MCP task failed: ${statusMessage}` : 'MCP task failed')
+    this.name = 'McpTaskFailedError'
+    this.statusMessage = statusMessage
+  }
+}
+
 /** Options for MCP tool invocation. */
 export interface McpCallToolOptions {
   /** AbortSignal to cancel the in-flight request. */
   signal?: AbortSignal
-  /** Overrides the configured overall timeout in milliseconds for this call. */
+  /** Overall time limit in milliseconds for this call. Overrides `tasksConfig.pollTimeout` when tasks are configured. */
   timeoutMs?: number
 }
 
@@ -174,7 +189,7 @@ export interface McpClientOptions extends RuntimeConfig {
   /** Filters controlling which tools this client exposes. */
   toolFilters?: McpToolFilters
 
-  /** Enables automatic execution for legacy task tools. */
+  /** Enables automatic execution for legacy task tools. Experimental: subject to change. */
   tasksConfig?: TasksConfig
 
   /**
@@ -609,10 +624,11 @@ export class McpClient {
    * @param options - Optional settings for the request.
    * @returns The final tool result.
    * @throws {@link McpTaskCancelledError} When the server reports a cancelled task.
-   * @throws {@link SdkError} When a legacy task reports the `failed` status.
+   * @throws {@link McpTaskFailedError} When a legacy task reports the `failed` status.
    */
   public async callTool(tool: McpTool, args: JSONValue, options?: McpCallToolOptions): Promise<JSONValue> {
     if (!this._tasksConfig) {
+      if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
       const outcome = await this._callToolWithTask(tool, args, {
         ...(options?.signal && { signal: options.signal }),
         ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
@@ -731,16 +747,16 @@ export class McpClient {
         )
       }
       if (state.status === 'cancelled') throw new McpTaskCancelledError(state.statusMessage)
-      if (state.status === 'failed')
-        throw new SdkError(
-          SdkErrorCode.InvalidResult,
-          `MCP task failed${state.statusMessage ? `: ${state.statusMessage}` : ''}`
-        )
-      // tasks/result delivers queued server requests when a legacy task requires input.
+      if (state.status === 'failed') throw new McpTaskFailedError(state.statusMessage)
+      // tasks/result delivers queued server requests when a legacy task requires input. The server
+      // holds this request while input is pending and sends no progress, so the wait is bounded by
+      // the overall operation deadline instead of the per-request inactivity timeout.
       return await this._client.request(
         { method: 'tasks/result', params: { taskId: task.taskId } },
         specTypeSchemas.CallToolResult,
-        requestOptions()
+        state.status === 'input_required'
+          ? { ...requestOptions(), timeout: remainingTime(operation.deadline, this._tasksConfig!.pollTimeoutMs) }
+          : requestOptions()
       )
     } catch (error) {
       if (
@@ -750,6 +766,8 @@ export class McpClient {
         this._state === 'connected' &&
         this._client.getServerCapabilities()?.tasks?.cancel !== undefined
       ) {
+        // Cleanup is best-effort and tightly bounded so a stalled server cannot delay surfacing
+        // the original failure.
         void this._client
           .request({ method: 'tasks/cancel', params: { taskId: task.taskId } }, specTypeSchemas.CancelTaskResult, {
             timeout: Math.min(1_000, this._tasksConfig!.requestTimeoutMs),
@@ -760,11 +778,7 @@ export class McpClient {
     }
   }
 
-  private _createTaskOperation(
-    externalSignal: AbortSignal | undefined,
-    timeoutMs: number,
-    timeoutError?: Error
-  ): TaskOperation {
+  private _createTaskOperation(externalSignal: AbortSignal | undefined, timeoutMs: number): TaskOperation {
     assertPositiveDuration(timeoutMs, 'MCP task overall timeout')
     const controller = new AbortController()
     this._taskControllers.add(controller)
@@ -772,10 +786,9 @@ export class McpClient {
     const abortFromExternal = (): void => controller.abort(abortReason(externalSignal))
     const timeout = setTimeout(() => {
       controller.abort(
-        timeoutError ??
-          new SdkError(SdkErrorCode.RequestTimeout, `MCP task did not complete within ${timeoutMs}ms`, {
-            timeoutMs,
-          })
+        new SdkError(SdkErrorCode.RequestTimeout, `MCP task did not complete within ${timeoutMs}ms`, {
+          timeoutMs,
+        })
       )
     }, timeoutMs)
 

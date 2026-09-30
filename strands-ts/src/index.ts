@@ -329,6 +329,8 @@ export {
   type McpServerConfig,
   type SerializableMcpToolFilters,
   McpClient,
+  McpTaskCancelledError,
+  McpTaskFailedError,
 } from './mcp/index.js'
 export type { ElicitationCallback, ElicitationContext } from './types/elicitation.js'
 
@@ -410,5 +412,3 @@ export type {
   IntervalTriggerOptions,
   ModelExtractorOptions,
 } from './memory/index.js'
-
-export { McpTaskCancelledError } from './mcp/client.js'

@@ -7,7 +7,7 @@ import {
 } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { McpClient, type TasksConfig } from '../client.js'
+import { McpClient, McpTaskCancelledError, McpTaskFailedError, type TasksConfig } from '../client.js'
 import { McpTool } from '../../tools/mcp-tool.js'
 
 import type {
@@ -250,11 +250,31 @@ describe('McpClient legacy task execution', () => {
     }
   )
 
-  it.each(['failed', 'cancelled'] as const)('rejects a %s task without retrieving a payload', async (status) => {
+  it.each([
+    { status: 'failed', errorClass: McpTaskFailedError },
+    { status: 'cancelled', errorClass: McpTaskCancelledError },
+  ] as const)('rejects a $status task without retrieving a payload', async ({ status, errorClass }) => {
     const { client, server, tool } = await legacyHarness()
     server.handle('tools/call', () => ({ task: legacyTask(status) }))
-    await expect(client.callTool(tool, {})).rejects.toThrow(`legacy task ${status}`)
+    const result = client.callTool(tool, {})
+    await expect(result).rejects.toThrow(`legacy task ${status}`)
+    await expect(result).rejects.toBeInstanceOf(errorClass)
     expect(server.requests('tasks/result')).toHaveLength(0)
+  })
+
+  it('waits for queued input on tasks/result beyond the request timeout without progress', async () => {
+    vi.useFakeTimers()
+    const { client, server, tool } = await legacyHarness({ requestTimeout: 100, pollTimeout: 5_000 })
+    server.handle('tools/call', () => ({ task: legacyTask('input_required') }))
+    server.handle(
+      'tasks/result',
+      () =>
+        new Promise((resolve) => setTimeout(() => resolve({ content: [{ type: 'text', text: 'late answer' }] }), 300))
+    )
+    const result = client.callTool(tool, {})
+    await vi.advanceTimersByTimeAsync(400)
+    await expect(result).resolves.toEqual({ content: [{ type: 'text', text: 'late answer' }] })
+    expect(server.requests('tasks/cancel')).toHaveLength(0)
   })
 
   it.each([
@@ -375,6 +395,16 @@ describe('McpClient task request timeouts', () => {
           : expect(result).resolves.toMatchObject({ content: [{ type: 'text', text: 'direct' }] })
       await vi.advanceTimersByTimeAsync(160)
       await assertion
+    }
+  )
+})
+
+describe('McpClient call timeout validation', () => {
+  it.each([{ tasksConfig: {} as TasksConfig }, { tasksConfig: false as const }])(
+    'rejects a non-integer timeoutMs (tasksConfig: $tasksConfig)',
+    async ({ tasksConfig }) => {
+      const { client, tool } = await createHarness({ tasksConfig })
+      await expect(client.callTool(tool, {}, { timeoutMs: 1500.5 })).rejects.toThrow(/positive safe integer/)
     }
   )
 })
