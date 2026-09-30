@@ -265,7 +265,7 @@ class BedrockNovaSonicModel(BidiModel, AudioCapable):
         self._config = ModelConfig(**model_config)
         self._config["params"] = dict(self._config.get("params") or {})
 
-        # Nova caps a connection at ~8 min; reconnect at 7 min, leaving headroom below the cap.
+        # Nova caps a connection at ~8 min; restart at 7 min, leaving headroom below the cap.
         # It also reports cumulative usage totals.
         self._config["connection"] = ConnectionConfig(**{"restart_after_s": 420, **self._config.get("connection", {})})
         self.usage_is_cumulative = True
@@ -503,7 +503,7 @@ class BedrockNovaSonicModel(BidiModel, AudioCapable):
                 raise ConnectionTimeoutError(error.message) from error
 
             # Per the smithy EventReceiver contract, receive() returns None only at
-            # end-of-stream (e.g. the connection closed during reconnect). A closed receiver
+            # end-of-stream (e.g. the connection closed during restart). A closed receiver
             # returns None without suspending, so continuing here busy-loops and starves the
             # event loop; end the generator so the reader exits cleanly and the swap proceeds.
             if event_data is None:

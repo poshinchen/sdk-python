@@ -71,10 +71,10 @@ OpenAI documents a 60 minute limit on realtime sessions
 not emit any warnings when approaching the limit. As a workaround, we configure a max timeout client side to gracefully
 handle the connection closure. We set the max to 50 minutes to provide enough buffer before hitting the real limit.
 """
-# Proactive reconnect fires this many seconds below the reader's reactive timeout, leaving room for
+# Proactive restart fires this many seconds below the reader's reactive timeout, leaving room for
 # the turn-boundary alignment wait so a mid-turn swap stays graceful instead of being preempted by
 # the reactive timeout firing at the same instant.
-OPENAI_PROACTIVE_RECONNECT_MARGIN_S = 300
+OPENAI_PROACTIVE_RESTART_MARGIN_S = 300
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime"
 DEFAULT_SAMPLE_RATE = 24000
 
@@ -243,12 +243,12 @@ class OpenAIRealtimeModel(BidiModel, AudioCapable):
                 f"timeout_s=<{timeout_s}>, max_timeout_s=<{OPENAI_MAX_TIMEOUT_S}> | timeout exceeds max limit"
             )
 
-        # OpenAI emits no approaching-limit warning, so reconnect proactively a margin below the
+        # OpenAI emits no approaching-limit warning, so restart proactively a margin below the
         # reader's reactive timeout: the swap can then align to a turn boundary before the reactive
         # path fires. Deriving from timeout_s keeps that headroom when a caller lowers it.
         self._config["connection"] = ConnectionConfig(
             **{
-                "restart_after_s": timeout_s - OPENAI_PROACTIVE_RECONNECT_MARGIN_S,
+                "restart_after_s": timeout_s - OPENAI_PROACTIVE_RESTART_MARGIN_S,
                 **self._config.get("connection", {}),
             }
         )
@@ -531,7 +531,7 @@ class OpenAIRealtimeModel(BidiModel, AudioCapable):
 
         yield BidiConnectionStartEvent(connection_id=self._connection_id, model=self._config["model_id"])
 
-        # Bind this reader to the connection it started on. After a reconnect swaps self._websocket,
+        # Bind this reader to the connection it started on. After a restart swaps self._websocket,
         # a still-draining superseded reader keeps reading its own (now-closed) socket rather than
         # stealing messages from the connection that replaced it.
         websocket = self._websocket

@@ -159,7 +159,7 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
         self._config = ModelConfig(**model_config)
         self._config["params"] = dict(self._config.get("params") or {})
 
-        # Gemini caps a single connection at ~10 min; reconnect before that, resuming the same
+        # Gemini caps a single connection at ~10 min; restart before that, resuming the same
         # session via its handle. The GoAway message remains the reactive backstop.
         self._config["connection"] = ConnectionConfig(**{"restart_after_s": 540, **self._config.get("connection", {})})
         # Gemini reports per-response token deltas, not cumulative session totals.
@@ -240,7 +240,7 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
             raise RuntimeError("model already started | call stop before starting again")
 
         # A fresh start (no handle) drops any handle from a prior session; otherwise the next
-        # proactive reconnect would resume that conversation into this one. Resume paths pass the
+        # proactive restart would resume that conversation into this one. Resume paths pass the
         # handle explicitly and keep it.
         if "live_session_handle" not in kwargs:
             self._live_session_handle = None
@@ -300,7 +300,7 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
 
         yield BidiConnectionStartEvent(connection_id=self._connection_id, model=self._config["model_id"])
 
-        # Bind session and turn state to this reader so that after a reconnect swaps
+        # Bind session and turn state to this reader so that after a restart swaps
         # self._live_session, a still-draining reader keeps its own closing session and turn state
         # rather than mutating the connection that replaced it.
         session = self._live_session
@@ -752,7 +752,7 @@ class GoogleGeminiLiveModel(BidiModel, AudioCapable):
             "output_audio_transcription": {},
             "input_audio_transcription": {},
             # Sliding-window context compression removes the ~15-min audio-only session cap, so a
-            # session resumed across proactive reconnects can continue indefinitely rather than
+            # session resumed across proactive restarts can continue indefinitely rather than
             # dying at the cap (gemini_session.md).
             "context_window_compression": {"sliding_window": {}},
         }

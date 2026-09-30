@@ -150,7 +150,7 @@ Emitted when the streaming connection is established and ready for interaction.
 
 #### BidiConnectionRestartEvent
 
-Emitted when the agent restarts the model connection, on either reconnect path. The agent preserves the conversation history and resumes automatically. A scheduled restart fires proactively when the reconnect timer reaches the provider's limit; a timeout restart fires reactively after the model reports a timeout.
+Emitted when the agent restarts the model connection, on either restart path. The agent preserves the conversation history and resumes automatically. A scheduled restart fires proactively when the restart timer reaches the provider's limit; a timeout restart fires reactively after the model reports a timeout.
 
 ```python
 {
@@ -164,7 +164,7 @@ Emitted when the agent restarts the model connection, on either reconnect path. 
 **Properties:**
 
 - `reason`: What triggered the restart
-  - `"scheduled"`: The reconnect timer fired ahead of the provider's limit (the normal path)
+  - `"scheduled"`: The restart timer fired ahead of the provider's limit (the normal path)
   - `"timeout"`: The connection timed out and the model reported it
 - `timeout_error`: The timeout error on the reactive path; `None` when the reason is `"scheduled"`
 - `turn_interrupted`: `True` when the restart cut an in-progress or owed turn. The provider replays history as context, so that turn is not answered on its own: re-prompt or notify the user when this is set.
@@ -180,11 +180,11 @@ async for event in agent.receive():
         # Connection resumes automatically with full history.
 ```
 
-See [Connection Lifecycle](agent.md#connection-restart) for more on reconnect timing.
+See [Connection Lifecycle](agent.md#connection-restart) for more on restart timing.
 
 #### BidiConnectionWarningEvent
 
-Emitted by the proactive reconnect timer shortly before a scheduled restart. Informational only: use it to surface a "reconnecting shortly" hint in a UI.
+Emitted by the proactive restart timer shortly before a scheduled restart. Informational only: use it to surface a "restarting shortly" hint in a UI.
 
 ```python
 {
@@ -195,13 +195,13 @@ Emitted by the proactive reconnect timer shortly before a scheduled restart. Inf
 
 **Properties:**
 
-- `time_left_s`: Approximate seconds until the scheduled reconnect
+- `time_left_s`: Approximate seconds until the scheduled restart
 
 **Usage:**
 ```python
 async for event in agent.receive():
     if event["type"] == "bidi_connection_warning":
-        print(f"Reconnecting in ~{event['time_left_s']:.0f}s")
+        print(f"Restarting in ~{event['time_left_s']:.0f}s")
 ```
 
 #### BidiConnectionStopEvent
@@ -679,7 +679,7 @@ async def main():
         # Continuous conversation that handles restarts
         async for event in agent.receive():
             if event["type"] == "bidi_connection_warning":
-                print(f"Reconnecting in ~{event['time_left_s']:.0f}s")
+                print(f"Restarting in ~{event['time_left_s']:.0f}s")
 
             elif event["type"] == "bidi_connection_restart":
                 print(f"Connection restarting (reason={event['reason']})")

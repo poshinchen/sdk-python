@@ -72,7 +72,7 @@ class BidiModel(Model, abc.ABC):
         return cast(str, self.get_config()["model_id"])
 
     def get_connection_config(self) -> ConnectionConfig:
-        """Get the configured reconnect timing, or an empty config if unspecified."""
+        """Get the configured restart timing, or an empty config if unspecified."""
         return cast(ConnectionConfig, self.get_config().get("connection", {}))
 
     def structured_output(self, *args: Any, **kwargs: Any) -> NoReturn:

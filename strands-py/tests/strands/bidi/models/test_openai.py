@@ -21,7 +21,7 @@ from strands.bidi.models import ConnectionTimeoutError, OpenAIRealtimeModel
 from strands.bidi.models.openai import (
     _RESTART_INSTRUCTION,
     OPENAI_MAX_TIMEOUT_S,
-    OPENAI_PROACTIVE_RECONNECT_MARGIN_S,
+    OPENAI_PROACTIVE_RESTART_MARGIN_S,
     _SessionState,
 )
 from strands.bidi.types import (
@@ -167,7 +167,7 @@ def test_model_initialization(api_key, model_id, monkeypatch):
     exp_config = {
         "model_id": model_id,
         "params": {},
-        "connection": {"restart_after_s": OPENAI_MAX_TIMEOUT_S - OPENAI_PROACTIVE_RECONNECT_MARGIN_S},
+        "connection": {"restart_after_s": OPENAI_MAX_TIMEOUT_S - OPENAI_PROACTIVE_RESTART_MARGIN_S},
     }
     assert tru_config == exp_config
     tru_config["model_id"] = "updated-model"
@@ -297,7 +297,7 @@ def test_update_config_rejects_unsupported_audio_format(model_id, api_key, direc
     exp_config = {
         "model_id": "gpt-realtime-2.1",
         "params": {"max_output_tokens": 2048},
-        "connection": {"restart_after_s": OPENAI_MAX_TIMEOUT_S - OPENAI_PROACTIVE_RECONNECT_MARGIN_S},
+        "connection": {"restart_after_s": OPENAI_MAX_TIMEOUT_S - OPENAI_PROACTIVE_RESTART_MARGIN_S},
     }
     assert tru_config == exp_config
     assert model.get_audio_config() is audio_config
@@ -1603,11 +1603,11 @@ async def test_tool_result_document_content_raises_error(model_id, mock_websocke
 
 
 def test_connection_config_defaults_and_override(model_id, api_key, mock_websockets_connect):
-    """Proactive reconnect fires a margin below the reactive timeout, and is overridable."""
+    """Proactive restart fires a margin below the reactive timeout, and is overridable."""
     default_model = OpenAIRealtimeModel(model_id=model_id, transcription_model_id="gpt-4o-transcribe", api_key=api_key)
     # Deadline sits below the reactive timeout so a mid-turn swap is not preempted by it.
     assert default_model.get_connection_config() == {
-        "restart_after_s": OPENAI_MAX_TIMEOUT_S - OPENAI_PROACTIVE_RECONNECT_MARGIN_S
+        "restart_after_s": OPENAI_MAX_TIMEOUT_S - OPENAI_PROACTIVE_RESTART_MARGIN_S
     }
     assert default_model.get_connection_config()["restart_after_s"] < default_model.timeout_s
     # OpenAI reports per-response usage, so it must not be treated as cumulative.
@@ -1617,7 +1617,7 @@ def test_connection_config_defaults_and_override(model_id, api_key, mock_websock
     lowered_model = OpenAIRealtimeModel(
         model_id=model_id, transcription_model_id="gpt-4o-transcribe", api_key=api_key, timeout_s=1000
     )
-    assert lowered_model.get_connection_config()["restart_after_s"] == 1000 - OPENAI_PROACTIVE_RECONNECT_MARGIN_S
+    assert lowered_model.get_connection_config()["restart_after_s"] == 1000 - OPENAI_PROACTIVE_RESTART_MARGIN_S
 
     tuned_model = OpenAIRealtimeModel(
         model_id=model_id,
@@ -1794,7 +1794,7 @@ async def test_restart_forwards_tools(mock_websockets_connect, model, tool_spec)
 
 @pytest.mark.asyncio
 async def test_restart_survives_reanchor_send_failure(mock_websockets_connect, model):
-    """A failed re-anchor send is logged, not fatal: the reconnected session stays healthy."""
+    """A failed re-anchor send is logged, not fatal: the restarted session stays healthy."""
     _, mock_ws = mock_websockets_connect
 
     await model.start()
@@ -1843,7 +1843,7 @@ async def test_receive_binds_websocket_per_reader(mock_websockets_connect, model
     """A superseded reader keeps reading its own socket after self._websocket is swapped.
 
     Guards against a still-draining reader stealing messages from the connection that replaced it
-    on reconnect.
+    on restart.
     """
     _, ws1 = mock_websockets_connect
     await model.start()
@@ -1868,7 +1868,7 @@ async def test_receive_binds_websocket_per_reader(mock_websockets_connect, model
     assert isinstance(first, BidiAudioDeltaEvent)
     assert first.audio == "FROM_WS1"
 
-    # Swap in a replacement socket, as a reconnect would.
+    # Swap in a replacement socket, as a restart would.
     ws2 = unittest.mock.AsyncMock()
     ws2.recv = unittest.mock.AsyncMock(
         return_value=json.dumps({"type": "response.output_audio.delta", "delta": "FROM_WS2"})

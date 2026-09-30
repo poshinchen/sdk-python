@@ -945,7 +945,7 @@ async def test_completion_end_is_not_a_turn_boundary(nova_model):
 
 @pytest.mark.asyncio
 async def test_connection_config_declared(nova_model):
-    """Nova declares its reconnect deadline and cumulative usage semantics."""
+    """Nova declares its restart deadline and cumulative usage semantics."""
     assert nova_model.get_connection_config()["restart_after_s"] == 420
     assert nova_model.usage_is_cumulative is True
 
@@ -1015,8 +1015,8 @@ async def test_restart_twice_does_not_raise(nova_model):
 
 
 @pytest.mark.asyncio
-async def test_proactive_reconnect_end_to_end_through_agent(model_id, boto_session, mock_client, mock_stream):
-    """End-to-end: BidiAgent + real Nova model proactively reconnects before the deadline.
+async def test_proactive_restart_end_to_end_through_agent(model_id, boto_session, mock_client, mock_stream):
+    """End-to-end: BidiAgent + real Nova model proactively restarts before the deadline.
 
     Drives the full chain against the real BedrockNovaSonicModel (mocked Bedrock transport):
     the loop reads Nova's connection config, arms the proactive timer, emits a warning,
@@ -1027,7 +1027,7 @@ async def test_proactive_reconnect_end_to_end_through_agent(model_id, boto_sessi
     from strands.bidi.types import BidiConnectionWarningEvent
 
     # Nova never emits events on its own here; await_output blocks so the model task idles
-    # while the proactive timer drives the reconnect.
+    # while the proactive timer drives the restart.
     output = AsyncMock()
     never = asyncio.Event()
 
@@ -1045,7 +1045,7 @@ async def test_proactive_reconnect_end_to_end_through_agent(model_id, boto_sessi
     agent = BidiAgent(model=model, system_prompt="You are helpful")
 
     # Drive the timer without wall time: the first cycle's sleeps return immediately, the re-armed
-    # cycle after the swap parks, so exactly one proactive reconnect fires.
+    # cycle after the swap parks, so exactly one proactive restart fires.
     sleep_count = 0
 
     async def fake_sleep(_seconds):
@@ -1055,7 +1055,7 @@ async def test_proactive_reconnect_end_to_end_through_agent(model_id, boto_sessi
             await asyncio.Event().wait()
         await asyncio.sleep(0)
 
-    agent._loop._reconnect_timer._sleep = fake_sleep
+    agent._loop._restart_timer._sleep = fake_sleep
 
     await agent.start()
 
@@ -1065,7 +1065,7 @@ async def test_proactive_reconnect_end_to_end_through_agent(model_id, boto_sessi
     async for event in agent.receive():
         if isinstance(event, BidiConnectionWarningEvent):
             warning_seen = True
-        # Once a reconnect has produced a new connection id, the proactive cycle completed.
+        # Once a restart has produced a new connection id, the proactive cycle completed.
         if model._connection_id is not None and model._connection_id != first_connection_id:
             break
 
@@ -1630,9 +1630,9 @@ async def test_receive_ends_when_stream_closed(nova_model, mock_stream, alist):
     """A None from the event receiver marks end-of-stream; the receive loop must terminate.
 
     Per the smithy EventReceiver contract, receive() returns None only at end-of-stream (e.g.
-    the connection closed on reconnect), and a closed receiver returns it without suspending.
+    the connection closed on restart), and a closed receiver returns it without suspending.
     Treating that as a transient empty event and continuing busy-loops the reader, starving the
-    event loop and hanging the reconnect swap. The generator must instead finish.
+    event loop and hanging the restart swap. The generator must instead finish.
     """
     mock_output = AsyncMock()
     mock_output.receive = AsyncMock(return_value=None)

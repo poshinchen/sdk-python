@@ -110,8 +110,8 @@ class BidiConnectionStartEvent(TypedEvent):
 class BidiConnectionRestartEvent(TypedEvent):
     """Agent is restarting the model connection.
 
-    Emitted on both reconnect paths: reactively after the model reports a timeout, and
-    proactively when the reconnect timer fires ahead of the provider's limit.
+    Emitted on both restart paths: reactively after the model reports a timeout, and
+    proactively when the restart timer fires ahead of the provider's limit.
 
     Parameters:
         reason: What triggered the restart ("timeout" reactively, "scheduled" proactively).
@@ -155,12 +155,12 @@ class BidiConnectionRestartEvent(TypedEvent):
 
 
 class BidiConnectionWarningEvent(TypedEvent):
-    """Agent is approaching a proactive reconnect.
+    """Agent is approaching a proactive restart.
 
-    Emitted by the proactive reconnect timer before a reconnect; informational only.
+    Emitted by the proactive restart timer before a restart; informational only.
 
     Parameters:
-        time_left_s: Approximate seconds until the scheduled reconnect.
+        time_left_s: Approximate seconds until the scheduled restart.
     """
 
     def __init__(self, time_left_s: float):
@@ -174,7 +174,7 @@ class BidiConnectionWarningEvent(TypedEvent):
 
     @property
     def time_left_s(self) -> float:
-        """Approximate seconds until the scheduled reconnect."""
+        """Approximate seconds until the scheduled restart."""
         return cast(float, self["time_left_s"])
 
 

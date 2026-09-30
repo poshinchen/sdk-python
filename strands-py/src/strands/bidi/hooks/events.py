@@ -77,7 +77,7 @@ class BidiBeforeConnectionRestartEvent(_HookEvent):
     """Event emitted before the agent restarts the model connection.
 
     A restart is triggered either reactively, after the model reports a timeout, or
-    proactively, when the reconnect timer fires ahead of the provider's limit.
+    proactively, when the restart timer fires ahead of the provider's limit.
 
     Attributes:
         reason: What triggered the restart ("timeout" reactively, "scheduled" proactively).
