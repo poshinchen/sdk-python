@@ -1888,6 +1888,7 @@ class Agent(AgentBase, LocalAgent):
             messages: The input messages.
         """
         model_id = self.model.config.get("model_id") if hasattr(self.model, "config") else None
+        self.tracer.update_baggage_entries({"session.id": self.session_id})
         return self.tracer.start_agent_span(
             messages=messages,
             agent_name=self.name,

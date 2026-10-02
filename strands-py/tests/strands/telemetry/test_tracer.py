@@ -2718,3 +2718,33 @@ class TestSpanAttributesOnly:
 
             mock_span.set_attributes.assert_not_called()
             mock_span.add_event.assert_not_called()
+
+
+class TestUpdateBaggageEntries:
+    """Tests for Tracer.update_baggage_entries and baggage injection in _start_span."""
+
+    def test_merges_and_injects_baggage_into_span_context(self, mock_tracer):
+        """Two separate update calls should merge, and both entries should appear in the span context."""
+        with mock.patch("strands.telemetry.tracer.trace_api.get_tracer", return_value=mock_tracer):
+            tracer = Tracer()
+            tracer.tracer = mock_tracer
+            tracer.update_baggage_entries({"tenant.id": "acme"})
+            tracer.update_baggage_entries({"session.id": "sess-42"})
+
+            mock_span = mock.MagicMock()
+            mock_span.is_recording.return_value = False
+            mock_tracer.start_span.return_value = mock_span
+
+            tracer.start_agent_span(
+                messages=[{"role": "user", "content": [{"text": "hello"}]}],
+                agent_name="TestAgent",
+            )
+
+            ctx = mock_tracer.start_span.call_args[1].get("context")
+            assert ctx is not None
+
+            from opentelemetry import baggage
+
+            all_baggage = baggage.get_all(ctx)
+            assert all_baggage.get("tenant.id") == "acme"
+            assert all_baggage.get("session.id") == "sess-42"

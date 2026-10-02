@@ -21,6 +21,8 @@ from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
+from opentelemetry.processor.baggage import ALLOW_ALL_BAGGAGE_KEYS, BaggageSpanProcessor
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,6 +111,9 @@ class StrandsTelemetry:
 
         # Create tracer provider
         self.tracer_provider = SDKTracerProvider(resource=self.resource)
+
+        # Set BaggageSpanProcessor so baggage entries are stamped as span attributes.
+        self.tracer_provider.add_span_processor(BaggageSpanProcessor(ALLOW_ALL_BAGGAGE_KEYS))
 
         # Set as global tracer provider
         trace_api.set_tracer_provider(self.tracer_provider)
