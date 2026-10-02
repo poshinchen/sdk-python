@@ -627,8 +627,8 @@ export class McpClient {
    * @throws {@link McpTaskFailedError} When a legacy task reports the `failed` status.
    */
   public async callTool(tool: McpTool, args: JSONValue, options?: McpCallToolOptions): Promise<JSONValue> {
+    if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
     if (!this._tasksConfig) {
-      if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
       const outcome = await this._callToolWithTask(tool, args, {
         ...(options?.signal && { signal: options.signal }),
         ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
@@ -638,8 +638,6 @@ export class McpClient {
 
     const operation = this._createTaskOperation(options?.signal, options?.timeoutMs ?? this._tasksConfig.pollTimeoutMs)
     try {
-      throwIfAborted(operation.signal)
-      await raceWithAbort(this.connect(), operation.signal)
       const outcome = await this._callToolWithTask(
         tool,
         args,
@@ -649,7 +647,12 @@ export class McpClient {
       )
       return outcome.result as JSONValue
     } catch (error) {
-      throw operation.signal.aborted ? abortReason(operation.signal) : error
+      if (!operation.signal.aborted) throw error
+      // The abort reason wins over whichever in-flight request failed first, but that failure
+      // stays attached as the cause.
+      const reason = abortReason(operation.signal)
+      if (reason !== error) reason.cause ??= error
+      throw reason
     } finally {
       operation.dispose()
     }
@@ -779,7 +782,6 @@ export class McpClient {
   }
 
   private _createTaskOperation(externalSignal: AbortSignal | undefined, timeoutMs: number): TaskOperation {
-    assertPositiveDuration(timeoutMs, 'MCP task overall timeout')
     const controller = new AbortController()
     this._taskControllers.add(controller)
     const deadline = Date.now() + timeoutMs
