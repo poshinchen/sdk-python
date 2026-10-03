@@ -7,11 +7,13 @@ import textwrap
 import threading
 import unittest.mock
 import warnings
+from collections import defaultdict
 from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from opentelemetry.processor.baggage import BaggageSpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -19,6 +21,7 @@ from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
 import strands
+import strands.telemetry.tracer as tracer_mod
 from strands import Agent, Plugin, ToolContext
 from strands.agent import AgentResult
 from strands.agent._agent_as_tool import _AgentAsTool
@@ -3873,3 +3876,76 @@ async def test_agent_span_ends_on_generator_exit():
     assert len(agent_spans) == 1
     assert agent_spans[0].status.status_code == StatusCode.UNSET
     assert agent_spans[0].attributes["strands.cancellation.type"] == "GeneratorExit"
+
+
+@pytest.mark.asyncio
+async def test_cross_agent_session_id_baggage_isolation():
+    """Interleaved agents must each stamp their own session.id on every span."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(BaggageSpanProcessor(lambda key: key == "session.id"))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    # Wire a fresh provider onto the singleton so baggage flows through the real pipeline.
+    orig_singleton = tracer_mod._tracer_instance
+    tracer_mod._tracer_instance = None
+    tracer = tracer_mod.get_tracer()
+    tracer.tracer_provider = provider
+    tracer.tracer = provider.get_tracer(tracer.service_name)
+
+    try:
+        # Gates force interleaving: each tool signals its own gate then awaits the other.
+        gate_a, gate_b = asyncio.Event(), asyncio.Event()
+
+        @strands.tool
+        async def tool_a() -> str:
+            gate_a.set()
+            await gate_b.wait()
+            return "done"
+
+        @strands.tool
+        async def tool_b() -> str:
+            gate_b.set()
+            await gate_a.wait()
+            return "done"
+
+        def _tool_then_text(tool_name):
+            """Model responses: call the tool, then finish with text."""
+            return MockedModelProvider(
+                [
+                    {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t", "name": tool_name, "input": {}}}]},
+                    {"role": "assistant", "content": [{"text": "done"}]},
+                ]
+            )
+
+        agent_a = Agent(model=_tool_then_text("tool_a"), tools=[tool_a], callback_handler=None, name="AgentA")
+        agent_b = Agent(model=_tool_then_text("tool_b"), tools=[tool_b], callback_handler=None, name="AgentB")
+
+        async def drain(agent):
+            async for _ in agent.stream_async("hi"):
+                pass
+
+        await asyncio.gather(drain(agent_a), drain(agent_b))
+
+        provider.force_flush()
+        spans = exporter.get_finished_spans()
+        sid_a, sid_b = agent_a.session_id, agent_b.session_id
+        assert sid_a != sid_b, "precondition: agents must have different session ids"
+
+        # Group by trace; derive expected session.id from the root span's agent name.
+        by_trace: dict[int, list] = defaultdict(list)
+        for span in spans:
+            by_trace[span.context.trace_id].append(span)
+        assert len(by_trace) == 2, f"expected 2 traces, got {len(by_trace)}"
+
+        for trace_spans in by_trace.values():
+            root = next(s for s in trace_spans if s.parent is None)
+            agent_name = root.attributes["gen_ai.agent.name"]
+            expected = sid_a if agent_name == "AgentA" else sid_b
+            for span in trace_spans:
+                assert span.attributes.get("session.id") == expected, (
+                    f"span '{span.name}' in {agent_name} trace "
+                    f"has session.id={span.attributes.get('session.id')}, expected {expected}"
+                )
+    finally:
+        tracer_mod._tracer_instance = orig_singleton
