@@ -414,15 +414,19 @@ export class McpClient {
    * calls are no-ops until `connect(true)` is called explicitly to retry.
    *
    * @param reconnect - When true, forces a reconnect even if already connected or failed.
+   * @param options - Optional abort signal that stops this caller's wait. The connection attempt
+   *                  itself continues for other callers awaiting it.
    * @returns A promise that resolves when the connection is established.
    */
-  public async connect(reconnect: boolean = false): Promise<void> {
+  public async connect(reconnect: boolean = false, options?: { signal?: AbortSignal }): Promise<void> {
+    const signal = options?.signal
+    if (signal?.aborted) throw abortReason(signal)
     const generation = this._connectionGeneration
     if (this._connectionPromise) {
       try {
-        await this._connectionPromise
+        await (signal ? raceWithAbort(this._connectionPromise, signal) : this._connectionPromise)
       } catch (error) {
-        if (!reconnect) throw error
+        if (!reconnect || signal?.aborted) throw error
       }
       this._assertConnectionCurrent(generation)
       if (!reconnect) return
@@ -433,7 +437,7 @@ export class McpClient {
     const connectionPromise = this._connect(reconnect)
     this._connectionPromise = connectionPromise
     try {
-      await connectionPromise
+      await (signal ? raceWithAbort(connectionPromise, signal) : connectionPromise)
       this._assertConnectionCurrent(generation)
     } finally {
       if (this._connectionPromise === connectionPromise) {
@@ -629,7 +633,7 @@ export class McpClient {
   public async callTool(tool: McpTool, args: JSONValue, options?: McpCallToolOptions): Promise<JSONValue> {
     if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
     if (!this._tasksConfig) {
-      const outcome = await this._callToolWithTask(tool, args, {
+      const outcome = await this._invokeTool(tool, args, {
         ...(options?.signal && { signal: options.signal }),
         ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
       })
@@ -638,7 +642,7 @@ export class McpClient {
 
     const operation = this._createTaskOperation(options?.signal, options?.timeoutMs ?? this._tasksConfig.pollTimeoutMs)
     try {
-      const outcome = await this._callToolWithTask(
+      const outcome = await this._invokeTool(
         tool,
         args,
         { signal: operation.signal, timeoutMs: this._tasksConfig.requestTimeoutMs },
@@ -647,26 +651,20 @@ export class McpClient {
       )
       return outcome.result as JSONValue
     } catch (error) {
-      if (!operation.signal.aborted) throw error
-      // The abort reason wins over whichever in-flight request failed first, but that failure
-      // stays attached as the cause.
-      const reason = abortReason(operation.signal)
-      if (reason !== error) reason.cause ??= error
-      throw reason
+      throw operation.signal.aborted ? abortReason(operation.signal) : error
     } finally {
       operation.dispose()
     }
   }
 
-  private async _callToolWithTask(
+  private async _invokeTool(
     tool: McpTool,
     args: JSONValue,
     options: McpCallToolOptions,
     operation?: TaskOperation,
     completeLegacyTask = false
   ): Promise<McpToolCallOutcome> {
-    if (operation) throwIfAborted(operation.signal)
-    await (operation ? raceWithAbort(this.connect(), operation.signal) : this.connect())
+    await this.connect(false, operation ? { signal: operation.signal } : undefined)
     if (this._state === 'failed') throw new Error('MCP server failed to connect. Call connect(true) to retry.')
 
     if (args === null || args === undefined) {
@@ -832,10 +830,6 @@ function remainingTime(deadline: number, limit: number): number {
     throw new SdkError(SdkErrorCode.RequestTimeout, 'MCP task operation timed out')
   }
   return Math.max(1, Math.min(limit, remaining))
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw abortReason(signal)
 }
 
 function abortReason(signal: AbortSignal | undefined): Error {

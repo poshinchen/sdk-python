@@ -254,6 +254,33 @@ describe('MCP Integration', () => {
       expect(sdkClientMock.connect).toHaveBeenCalledTimes(2)
     })
 
+    it('stops a caller waiting on a shared connection when its signal aborts', async () => {
+      let resolveConnect!: () => void
+      sdkClientMock.connect.mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveConnect = resolve
+        })
+      )
+      const controller = new AbortController()
+      const reason = new Error('caller left')
+
+      const first = client.connect()
+      const second = client.connect(false, { signal: controller.signal })
+      controller.abort(reason)
+      await expect(second).rejects.toBe(reason)
+
+      resolveConnect()
+      await expect(first).resolves.toBeUndefined()
+      expect(client.connectionState).toBe('connected')
+      expect(sdkClientMock.connect).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects immediately when connect is called with an aborted signal', async () => {
+      const reason = new Error('already cancelled')
+      await expect(client.connect(false, { signal: AbortSignal.abort(reason) })).rejects.toBe(reason)
+      expect(sdkClientMock.connect).not.toHaveBeenCalled()
+    })
+
     it('converts SDK tool specs to McpTool instances', async () => {
       const longName = 'a'.repeat(65)
       const outputSchema = {
