@@ -976,7 +976,7 @@ export class Agent implements LocalAgent, InvokableAgent {
     return this._meter.metrics
   }
 
-  /** The agent's OpenTelemetry tracer, for injecting custom baggage or inspecting trace state. */
+  /** The agent's OpenTelemetry tracer, for inspecting trace state. */
   get tracer(): Tracer {
     return this._tracer
   }

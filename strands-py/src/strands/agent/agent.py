@@ -10,12 +10,13 @@ The Agent interface supports two complementary interaction patterns:
 """
 
 import asyncio
+import contextlib
 import copy
 import logging
 import threading
 import uuid
 import warnings
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator, Mapping
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -1418,14 +1419,7 @@ class Agent(AgentBase, LocalAgent):
             # Process input and get message to add (if any)
             messages = await self._convert_prompt_to_messages(prompt)
 
-            # Only set session.id when no ambient entry already exists to avoid clobbering.
-            if baggage_api.get_baggage("session.id") is None:
-                baggage_ctx = baggage_api.set_baggage("session.id", self.session_id)
-                # Attach session baggage to the OTel context for the duration of this invocation.
-                baggage_token = context_api.attach(baggage_ctx)
-            else:
-                baggage_token = None
-            try:
+            with self._session_baggage_scope():
                 self.trace_span = self._start_agent_trace_span(messages)
 
                 with trace_api.use_span(self.trace_span):
@@ -1472,9 +1466,6 @@ class Agent(AgentBase, LocalAgent):
                         # CancelledError into unrelated waiters would be incorrect.
                         self._end_agent_trace_span(cancellation=cancellation)
                         raise
-            finally:
-                if baggage_token is not None:
-                    context_api.detach(baggage_token)
 
         finally:
             if cancel_watcher is not None:
@@ -1893,6 +1884,23 @@ class Agent(AgentBase, LocalAgent):
         if messages is None:
             raise ValueError("Input prompt must be of type: `str | list[Contentblock] | Messages | None`.")
         return messages
+
+    @contextlib.contextmanager
+    def _session_baggage_scope(self) -> Generator[None, None, None]:
+        """Attach session.id as OTel baggage for the duration of the invocation.
+
+        Skips if session.id is already present in the ambient context.
+        """
+        if baggage_api.get_baggage("session.id") is None:
+            baggage_ctx = baggage_api.set_baggage("session.id", self.session_id)
+            token = context_api.attach(baggage_ctx)
+        else:
+            token = None
+        try:
+            yield
+        finally:
+            if token is not None:
+                context_api.detach(token)
 
     def _start_agent_trace_span(self, messages: Messages) -> trace_api.Span:
         """Starts a trace span for the agent.

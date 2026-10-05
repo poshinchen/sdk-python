@@ -277,9 +277,9 @@ export class Tracer {
   }
 
   /**
-   * Merge baggage entries into the set injected into every span's parent context.
+   * Merge baggage entries into the set injected into every span's OTel context.
    *
-   * Existing entries with the same key are overwritten; entries with different keys are preserved.
+   * Keys already present in the ambient OTel context are not overwritten.
    *
    * @param entries - Key-value pairs to set as W3C baggage entries.
    */

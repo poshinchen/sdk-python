@@ -41,6 +41,9 @@ import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
 import { logger } from '../logging/index.js'
 import { getServiceName } from './utils.js'
 
+// Baggage keys the SDK manages and stamps as span attributes.
+const STRANDS_BAGGAGE_KEYS = new Set(['session.id'])
+
 let DefaultTracerProvider: typeof BasicTracerProvider = BasicTracerProvider
 let DefaultContextManager: (new () => ContextManager) | undefined
 let DefaultPropagator: TextMapPropagator | undefined
@@ -187,7 +190,8 @@ export function setupTracer(config: TracerConfig = {}): TracerProvider {
   }
 
   const spanProcessors: SpanProcessor[] = []
-  if (DefaultBaggageSpanProcessor) spanProcessors.push(new DefaultBaggageSpanProcessor((key) => key === 'session.id'))
+  if (DefaultBaggageSpanProcessor)
+    spanProcessors.push(new DefaultBaggageSpanProcessor((key) => STRANDS_BAGGAGE_KEYS.has(key)))
   if (config.exporters?.otlp) spanProcessors.push(new BatchSpanProcessor(new OTLPTraceExporter()))
   if (config.exporters?.console) spanProcessors.push(new SimpleSpanProcessor(new ConsoleSpanExporter()))
   _provider = new DefaultTracerProvider({ resource: getOtelResource(), spanProcessors })

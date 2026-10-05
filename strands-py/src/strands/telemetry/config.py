@@ -24,6 +24,9 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 
 logger = logging.getLogger(__name__)
 
+# Baggage keys the SDK manages and stamps as span attributes.
+STRANDS_BAGGAGE_KEYS = frozenset({"session.id"})
+
 
 def get_otel_resource() -> Resource:
     """Create a standard OpenTelemetry resource with service information.
@@ -112,7 +115,7 @@ class StrandsTelemetry:
         self.tracer_provider = SDKTracerProvider(resource=self.resource)
 
         # Set BaggageSpanProcessor so baggage entries are stamped as span attributes.
-        self.tracer_provider.add_span_processor(BaggageSpanProcessor(lambda key: key == "session.id"))
+        self.tracer_provider.add_span_processor(BaggageSpanProcessor(lambda key: key in STRANDS_BAGGAGE_KEYS))
 
         # Set as global tracer provider
         trace_api.set_tracer_provider(self.tracer_provider)
