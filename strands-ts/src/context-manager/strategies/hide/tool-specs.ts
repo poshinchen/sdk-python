@@ -13,6 +13,7 @@ import { logger } from '../../../logging/logger.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
 import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
+import { SKILLS_TOOL_NAME } from '../../../vended-plugins/skills/agent-skills.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
 import { KeywordToolSearchStrategy, contentTerms, namesTool } from './search/keyword.js'
@@ -59,8 +60,9 @@ export interface HideToolSpecsConfig {
   /**
    * How many candidates the model sees: the best matches, then unmatched candidates in catalog
    * order until the budget is met, all emitted in catalog order. A catalog that fits within the
-   * budget passes through. Pinned and protected tools are shown in addition, so the wire carries
-   * `min(keep, candidates) + pinned + protected` specs on a ranked turn. Defaults to 10.
+   * budget passes through. Specs outside the target, pinned, or protected are shown in addition,
+   * so the wire carries `min(keep, candidates) + everything that is not a candidate` on a ranked
+   * turn. Defaults to 10.
    */
   keep?: number
   /**
@@ -82,8 +84,9 @@ const TOOL_SPEC_WILDCARD = `${TOOL_SPEC_PREFIX}*`
 
 /**
  * Tools that SDK-injected content tells the model to call: the structured-output tool, the
- * retrieval tools whose offload placeholders reference them, and the background-task tool whose
- * synthetic tool uses report task completion. Never hidden. Third-party plugin tools with the
+ * retrieval tools whose offload placeholders reference them, the background-task tool whose
+ * synthetic tool uses report task completion, and the skills tool the system prompt's
+ * available_skills section points at. Never hidden. Tools from plugins outside the SDK with the
  * same property are pinned by the user with `!toolSpec::<name>`.
  */
 const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
@@ -91,6 +94,7 @@ const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
   BACKGROUND_TASK_TOOL_NAME,
+  SKILLS_TOOL_NAME,
 ])
 
 /**
@@ -123,7 +127,10 @@ export class HideToolSpecsStrategy extends BaseHideStrategy<ToolSpecsState> {
   private readonly _candidates: ReadonlySet<string> | undefined
   /** Names from `!toolSpec::<name>` entries; always visible, never candidates. */
   private readonly _pinned: ReadonlySet<string>
-  /** The candidates each agent's model last saw, carried forward when a continuation turn has no matches. */
+  /**
+   * The candidates each agent's model last saw, carried forward on a continuation turn. Keyed by
+   * agent alone: carry-forward assumes sequential invocations, as ContextManager does.
+   */
   private readonly _previous = new WeakMap<LocalAgent, ReadonlySet<string>>()
 
   constructor(target: HideToolSpecsTarget, config?: HideToolSpecsConfig, conditions?: HideConditions) {
@@ -366,7 +373,11 @@ function resolveTarget(target: HideToolSpecsTarget): {
   return { candidates: wildcard || candidates.size === 0 ? undefined : candidates, pinned }
 }
 
-/** Latest user text is the query; tool-result-only user turns are skipped. */
+/**
+ * Latest user text is the query; tool-result-only user turns are skipped. A newest turn with no
+ * text at all (image-only input) is ranked against the user's previous text rather than treated
+ * as a continuation.
+ */
 function queryFromMessages(messages: readonly Message[]): string {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!

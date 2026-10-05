@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Hide } from '../hide/index.js'
 import { HideToolSpecsStrategy } from '../hide/tool-specs.js'
 import { MANAGE_TOOL_NAME } from '../../../background-tasks/background-tasks.js'
+import { SKILLS_TOOL_NAME } from '../../../vended-plugins/skills/agent-skills.js'
 import { logger } from '../../../logging/logger.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
@@ -121,6 +122,7 @@ const PROTECTED = [
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
   MANAGE_TOOL_NAME,
+  SKILLS_TOOL_NAME,
 ]
 const protectedSpecs = PROTECTED.map((name) => spec(name, 'Protected'))
 
@@ -675,12 +677,18 @@ describe('Hide.toolSpecs', () => {
       const search: ToolSearchStrategy = {
         search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
-      const strategy = toolSpecs('toolSpecs', { search, keep: 1 })
+      const strategy = toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' })
       const { agent: first, handler } = attach(strategy)
       const second = createMockAgent()
       await handler(context(first, catalog, { invocationState: {}, messages: [user('billing')] }))
-      const result = await handler(context(second, catalog, { invocationState: {}, messages: [user('thanks')] }))
-      expect(names(result.toolSpecs)).toEqual(names(catalog))
+      const carried = await handler(
+        context(first, catalog, { invocationState: {}, messages: followUp('billing', 'thanks') })
+      )
+      const other = await handler(
+        context(second, catalog, { invocationState: {}, messages: followUp('billing', 'thanks') })
+      )
+      expect(names(carried.toolSpecs)).toEqual(['billing_search'])
+      expect(names(other.toolSpecs)).toEqual([])
     })
 
     it('skips selection when nothing is eligible', async () => {
@@ -692,15 +700,36 @@ describe('Hide.toolSpecs', () => {
       expect(search.search).not.toHaveBeenCalled()
     })
 
-    it('shows every spec when the carried selection is no longer in the catalog', async () => {
+    it('intersects the carried selection with the current catalog', async () => {
+      const search: ToolSearchStrategy = {
+        search: async (query) =>
+          query === 'billing'
+            ? [
+                { name: 'billing_search', score: 2 },
+                { name: 'shipping_track', score: 1 },
+              ]
+            : [],
+      }
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 2, onFailure: 'none' }))
+      await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
+      const shrunk = catalog.filter((entry) => entry.name !== 'billing_search')
+      const result = await handler(
+        context(agent, shrunk, { invocationState: {}, messages: followUp('billing', 'thanks') })
+      )
+      expect(names(result.toolSpecs)).toEqual(['shipping_track'])
+    })
+
+    it('falls back when nothing carried survives in the current catalog', async () => {
       const search: ToolSearchStrategy = {
         search: async (query) => (query === 'billing' ? [{ name: 'billing_search', score: 1 }] : []),
       }
-      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1 }))
+      const { agent, handler } = attach(toolSpecs('toolSpecs', { search, keep: 1, onFailure: 'none' }))
       await handler(context(agent, catalog, { invocationState: {}, messages: [user('billing')] }))
       const shrunk = catalog.filter((entry) => entry.name !== 'billing_search')
-      const result = await handler(context(agent, shrunk, { invocationState: {}, messages: [user('thanks')] }))
-      expect(names(result.toolSpecs)).toEqual(names(shrunk))
+      const result = await handler(
+        context(agent, shrunk, { invocationState: {}, messages: followUp('billing', 'thanks') })
+      )
+      expect(names(result.toolSpecs)).toEqual([])
     })
   })
 
