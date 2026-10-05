@@ -52,6 +52,7 @@ from .mcp_router import make_mcp_router
 from .notebook import make_notebook, notebook
 from .shell import make_shell, shell
 from .sleep import make_sleep, sleep
+from .swarm import make_swarm, swarm
 
 
 def __getattr__(name: str) -> Any:
@@ -95,7 +96,9 @@ __all__ = [
     "make_mcp_router",
     "make_shell",
     "make_sleep",
+    "make_swarm",
     "notebook",
     "shell",
     "sleep",
+    "swarm",
 ]
