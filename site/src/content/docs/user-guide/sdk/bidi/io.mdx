@@ -45,7 +45,7 @@ async def run_conversation(
 
 When the timeout expires, `asyncio.wait_for()` cancels the run. It waits for the agent and its streams to stop, then raises `TimeoutError`.
 
-Your application can also cancel the task running `run()` when a user presses a stop button or a client disconnects. To let users end the conversation through a tool, see [Graceful shutdown](quickstart.mdx#graceful-shutdown).
+Your application can also cancel the task running `run()` when a user presses a stop button or a client disconnects. To let users end the conversation through a tool, see [End the conversation by voice](quickstart.mdx#end-the-conversation-by-voice).
 
 The following sections show how to use Strands' built-in `AudioIO` and `ConsoleIO` for audio and terminal interactions.
 
@@ -53,7 +53,7 @@ The following sections show how to use Strands' built-in `AudioIO` and `ConsoleI
 
 Use [`AudioIO`](@api/python/strands.bidi.io#strands.bidi.io.AudioIO) to capture microphone audio and play the assistant's speech through your speakers. It displays speech transcripts and tool call names in the terminal and handles [barge-in](events.mdx#barge-in-1) automatically by stopping interrupted playback.
 
-Install [PortAudio](quickstart.mdx#platform-specific-audio-setup), then install the SDK with audio I/O support:
+Install [PortAudio](quickstart.mdx#install-the-sdk), then install the SDK with audio I/O support:
 
 ```bash
 pip install "strands-agents[bidi,bidi-io,bidi-pyaudio]"
