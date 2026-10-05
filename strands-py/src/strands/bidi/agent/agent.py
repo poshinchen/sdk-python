@@ -110,7 +110,7 @@ class BidiAgent(LocalAgent):
         """Initialize bidirectional agent.
 
         Args:
-            model: BidiModel instance, Bedrock model ID string, or None to use Nova Sonic 2.
+            model: BidiModel instance, Bedrock model ID string, or None to use Nova Sonic 2.5.
             tools: Optional list of tools with flexible format support.
             system_prompt: System prompt for conversations as a string or structured content blocks.
                 Structured blocks are retained, while their text is passed to Bidi models as a string.
@@ -143,7 +143,7 @@ class BidiAgent(LocalAgent):
         elif model is None:
             from ..models.bedrock import BedrockNovaSonicModel
 
-            self.model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
+            self.model = BedrockNovaSonicModel(model_id="amazon.nova-2-5-sonic")
         else:
             raise TypeError("model must be a BidiModel, string, or None")
 
@@ -594,7 +594,7 @@ class BidiAgent(LocalAgent):
         Example:
             ```python
             # Using default audio settings:
-            model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
+            model = BedrockNovaSonicModel(model_id="amazon.nova-2-5-sonic")
             audio_io = AudioIO()
             agent = BidiAgent(model=model, tools=[calculator])
             await agent.run(
@@ -605,7 +605,7 @@ class BidiAgent(LocalAgent):
 
             # Using custom audio config:
             model = BedrockNovaSonicModel(
-                model_id="amazon.nova-2-sonic-v1:0",
+                model_id="amazon.nova-2-5-sonic",
                 audio={
                     "input": {"sample_rate": 16000},
                     "output": {"sample_rate": 24000},
