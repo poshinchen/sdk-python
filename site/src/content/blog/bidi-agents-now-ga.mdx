@@ -103,6 +103,7 @@ researcher = create_harness(
 research_tool = researcher.as_tool(
     name="research",
     description="Research questions that need detailed investigation.",
+    preserve_context=True,
 )
 
 agent = BidiAgent(
