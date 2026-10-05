@@ -3952,7 +3952,7 @@ async def test_cross_agent_session_id_baggage_isolation():
 
 
 def test_trace_attributes_session_id_overrides_auto_generated():
-    """trace_attributes['session.id'] should take precedence over the auto-generated session id."""
+    """trace_attributes['session.id'] should propagate as baggage, not just as a Strands span attribute."""
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(BaggageSpanProcessor(lambda key: key == "session.id"))
@@ -3965,15 +3965,30 @@ def test_trace_attributes_session_id_overrides_auto_generated():
     tracer.tracer = provider.get_tracer(tracer.service_name)
 
     try:
-        model = MockedModelProvider([{"role": "assistant", "content": [{"text": "hi"}]}])
-        agent = Agent(model=model, callback_handler=None, trace_attributes={"session.id": "custom-123"})
+        thirdparty_tracer = provider.get_tracer("thirdparty")
+
+        @strands.tool
+        def probe() -> str:
+            """Create a non-Strands span to verify baggage reaches third-party instrumentation."""
+            with thirdparty_tracer.start_as_current_span("probe-span"):
+                pass
+            return "ok"
+
+        model = MockedModelProvider(
+            [
+                {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t", "name": "probe", "input": {}}}]},
+                {"role": "assistant", "content": [{"text": "done"}]},
+            ]
+        )
+        agent = Agent(model=model, tools=[probe], callback_handler=None, trace_attributes={"session.id": "custom-123"})
         agent("hi")
 
         provider.force_flush()
         spans = exporter.get_finished_spans()
-        assert any(s.attributes.get("session.id") == "custom-123" for s in spans), (
-            f"expected session.id='custom-123' on at least one span, got: "
-            f"{[s.attributes.get('session.id') for s in spans]}"
+
+        probe_span = next(s for s in spans if s.name == "probe-span")
+        assert probe_span.attributes.get("session.id") == "custom-123", (
+            f"third-party span has session.id={probe_span.attributes.get('session.id')}, expected 'custom-123'"
         )
     finally:
         tracer_mod._tracer_instance = orig_singleton
