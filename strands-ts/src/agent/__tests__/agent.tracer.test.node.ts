@@ -25,7 +25,6 @@ interface MockTracerInstance {
   startToolCallSpan: MockInstance
   endToolCallSpan: MockInstance
   withSpanContext: MockInstance
-  updateBaggageEntries: MockInstance
 }
 
 vi.mock('../../telemetry/tracer.js', () => ({
@@ -40,7 +39,6 @@ vi.mock('../../telemetry/tracer.js', () => ({
       startToolCallSpan: vi.fn().mockReturnValue({ mock: 'toolSpan' }),
       endToolCallSpan: vi.fn(),
       withSpanContext: vi.fn((_span, fn) => fn()),
-      updateBaggageEntries: vi.fn(),
     }
   }),
 }))
@@ -92,18 +90,6 @@ describe('Agent tracer integration', () => {
       const agent = new Agent({ id: 'custom-id-123' })
 
       expect(agent.id).toBe('custom-id-123')
-    })
-  })
-
-  describe('session.id baggage', () => {
-    it('uses trace_attributes session.id over auto-generated session id', async () => {
-      const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hi' })
-      const agent = new Agent({ model, traceAttributes: { 'session.id': 'custom-123' } })
-      const tracer = getLatestTracer()
-
-      await agent.invoke('Hi')
-
-      expect(tracer.updateBaggageEntries).toHaveBeenCalledWith({ 'session.id': 'custom-123' })
     })
   })
 

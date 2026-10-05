@@ -41,13 +41,9 @@ import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http'
 import { logger } from '../logging/index.js'
 import { getServiceName } from './utils.js'
 
-// Baggage keys the SDK manages and stamps as span attributes.
-const STRANDS_BAGGAGE_KEYS = new Set(['session.id'])
-
 let DefaultTracerProvider: typeof BasicTracerProvider = BasicTracerProvider
 let DefaultContextManager: (new () => ContextManager) | undefined
 let DefaultPropagator: TextMapPropagator | undefined
-let DefaultBaggageSpanProcessor: (new (predicate: (key: string) => boolean) => SpanProcessor) | undefined
 if (typeof globalThis.process?.getBuiltinModule === 'function') {
   try {
     const nodeModule = globalThis.process.getBuiltinModule('node:module') as typeof import('module') | undefined
@@ -59,13 +55,6 @@ if (typeof globalThis.process?.getBuiltinModule === 'function') {
       DefaultPropagator = new CompositePropagator({
         propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
       })
-      try {
-        DefaultBaggageSpanProcessor = req('@opentelemetry/baggage-span-processor').BaggageSpanProcessor
-      } catch {
-        logger.info(
-          '@opentelemetry/baggage-span-processor not installed | baggage entries will not be stamped as span attributes'
-        )
-      }
     }
   } catch {
     logger.info('sdk-trace-node not available | using BasicTracerProvider without async context propagation')
@@ -190,8 +179,6 @@ export function setupTracer(config: TracerConfig = {}): TracerProvider {
   }
 
   const spanProcessors: SpanProcessor[] = []
-  if (DefaultBaggageSpanProcessor)
-    spanProcessors.push(new DefaultBaggageSpanProcessor((key) => STRANDS_BAGGAGE_KEYS.has(key)))
   if (config.exporters?.otlp) spanProcessors.push(new BatchSpanProcessor(new OTLPTraceExporter()))
   if (config.exporters?.console) spanProcessors.push(new SimpleSpanProcessor(new ConsoleSpanExporter()))
   _provider = new DefaultTracerProvider({ resource: getOtelResource(), spanProcessors })
