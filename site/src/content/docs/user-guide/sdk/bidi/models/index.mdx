@@ -61,11 +61,15 @@ the connection opens, not to the connection already in progress.
 
 ## Audio
 
-Realtime models take raw audio in and send raw audio back: mono PCM, at a sample rate
-the model defines. The model owns the audio format, so microphones, speakers, and
-client applications adapt to it rather than the other way around. Each provider page
-covers the audio options its model supports, and [I/O Streams](../io.mdx) covers how
-audio devices and custom streams match the model's format.
+Use the model's audio configuration to set up capture and playback. The built-in
+providers implement [`AudioCapable`][audio-capable], which exposes
+`get_audio_config()`. It returns separate `input` and `output` settings containing
+each stream's sample rate, channel count, and encoding.
+
+[`AudioIO`](../io.mdx#audio-io) reads these settings automatically. Custom
+[I/O streams](../io.mdx#custom-io) can read them to configure audio capture and
+playback. The built-in providers use mono PCM; sample rates and configuration
+options vary by provider. See each provider's page for its supported settings.
 
 ## Connection limits
 
@@ -78,8 +82,8 @@ restart in one of two ways:
 - **History replay**: Nova Sonic and OpenAI Realtime open a fresh connection and
   receive the conversation history.
 - **Session resumption**: Gemini Live reconnects to the same server-side session
-  through [session resumption](https://ai.google.dev/gemini-api/docs/live-session), so
-  no history is resent.
+  through [session resumption](google.mdx#connection-restarts), falling back to
+  history replay if resumption is unavailable.
 
 Each provider sets its own default restart timing, and the `connection` option
 overrides it or turns automatic restarts off. For the restart sequence and the events
@@ -93,3 +97,5 @@ yields Strands events as the model responds, in the order described in
 [Event ordering](../events.mdx#event-ordering). See the
 [`BidiModel` API reference](@api/python/strands.bidi.models#strands.bidi.models.BidiModel) for the
 contract, and the built-in providers in `strands/bidi/models/` for working examples.
+
+[audio-capable]: @api/python/strands.bidi.models#strands.bidi.models.AudioCapable
