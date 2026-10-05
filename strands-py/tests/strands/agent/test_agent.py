@@ -3949,3 +3949,31 @@ async def test_cross_agent_session_id_baggage_isolation():
                 )
     finally:
         tracer_mod._tracer_instance = orig_singleton
+
+
+def test_trace_attributes_session_id_overrides_auto_generated():
+    """trace_attributes['session.id'] should take precedence over the auto-generated session id."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(BaggageSpanProcessor(lambda key: key == "session.id"))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    orig_singleton = tracer_mod._tracer_instance
+    tracer_mod._tracer_instance = None
+    tracer = tracer_mod.get_tracer()
+    tracer.tracer_provider = provider
+    tracer.tracer = provider.get_tracer(tracer.service_name)
+
+    try:
+        model = MockedModelProvider([{"role": "assistant", "content": [{"text": "hi"}]}])
+        agent = Agent(model=model, callback_handler=None, trace_attributes={"session.id": "custom-123"})
+        agent("hi")
+
+        provider.force_flush()
+        spans = exporter.get_finished_spans()
+        assert any(s.attributes.get("session.id") == "custom-123" for s in spans), (
+            f"expected session.id='custom-123' on at least one span, got: "
+            f"{[s.attributes.get('session.id') for s in spans]}"
+        )
+    finally:
+        tracer_mod._tracer_instance = orig_singleton

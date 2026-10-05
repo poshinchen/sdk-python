@@ -1892,7 +1892,8 @@ class Agent(AgentBase, LocalAgent):
         Skips if session.id is already present in the ambient context.
         """
         if baggage_api.get_baggage("session.id") is None:
-            baggage_ctx = baggage_api.set_baggage("session.id", self.session_id)
+            session_id = self.trace_attributes.get("session.id", self.session_id)
+            baggage_ctx = baggage_api.set_baggage("session.id", str(session_id))
             token = context_api.attach(baggage_ctx)
         else:
             token = None
