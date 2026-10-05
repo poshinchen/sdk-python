@@ -775,10 +775,9 @@ class OpenAIRealtimeModel(BidiModel, AudioCapable):
             events.append(BidiTextStopEvent(content_id))
         state.assistant_parts.pop(content_id, None)
 
-        events.append(BidiResponseStopEvent(response_id=response_id))
-
         if usage := response.get("usage"):
             events.append(self._convert_usage_metadata(usage))
+        events.append(BidiResponseStopEvent(response_id=response_id))
         return events
 
     def _convert_usage_metadata(self, usage: dict[str, Any]) -> BidiUsageEvent:
