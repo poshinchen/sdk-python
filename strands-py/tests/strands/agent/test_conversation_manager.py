@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -685,7 +686,7 @@ def test_image_blocks_inside_tool_result_replaced_with_placeholder():
     assert changed
     tool_result_items = messages[0]["content"][0]["toolResult"]["content"]
     assert not any(isinstance(item, dict) and "image" in item for item in tool_result_items)
-    expected_placeholder = f"[image: jpeg, {len(image_data)} bytes]"
+    expected_placeholder = f"[image: jpeg, source: bytes, {len(image_data)} bytes]"
     assert any(isinstance(item, dict) and item.get("text") == expected_placeholder for item in tool_result_items)
 
 
@@ -746,6 +747,86 @@ def test_boundary_text_in_tool_result_not_truncated():
 
     assert not changed
     assert messages[0]["content"][0]["toolResult"]["content"][0]["text"] == boundary_text
+
+
+_S3_LOCATION = {"type": "s3", "uri": "s3://bucket/key"}
+
+
+@pytest.mark.parametrize(
+    ("item", "expected_placeholder"),
+    [
+        ({"image": {"format": "png", "source": {"location": _S3_LOCATION}}}, "[image: png, source: s3]"),
+        ({"video": {"format": "mp4", "source": {"bytes": b"0123456789"}}}, "[video: mp4, source: bytes, 10 bytes]"),
+        ({"video": {"format": "mov", "source": {"location": _S3_LOCATION}}}, "[video: mov, source: s3]"),
+        (
+            {"document": {"name": "report", "format": "pdf", "source": {"bytes": b"12345"}}},
+            "[document: report, pdf, source: bytes, 5 bytes]",
+        ),
+        (
+            {"document": {"name": "notes", "format": "txt", "source": {"location": _S3_LOCATION}}},
+            "[document: notes, txt, source: s3]",
+        ),
+        ({"image": {"format": "png", "source": {}}}, "[image: png, source: unknown]"),
+        ({"json": {"data": "X" * 500}}, "[json: 512 chars]"),
+    ],
+)
+def test_tool_result_item_replaced_with_placeholder(item, expected_placeholder):
+    manager = SlidingWindowConversationManager(window_size=10)
+    messages = [
+        {
+            "role": "user",
+            "content": [{"toolResult": {"toolUseId": "1", "content": [item], "status": "error"}}],
+        }
+    ]
+
+    changed = manager._truncate_tool_results(messages, 0)
+
+    assert changed
+    tru_tool_result = messages[0]["content"][0]["toolResult"]
+    exp_tool_result = {"toolUseId": "1", "content": [{"text": expected_placeholder}], "status": "error"}
+    assert tru_tool_result == exp_tool_result
+
+
+def test_small_json_in_tool_result_not_replaced():
+    manager = SlidingWindowConversationManager(window_size=10)
+    small_json = {"data": "X" * 100}
+    messages = [
+        {
+            "role": "user",
+            "content": [{"toolResult": {"toolUseId": "1", "content": [{"json": small_json}], "status": "success"}}],
+        }
+    ]
+
+    changed = manager._truncate_tool_results(messages, 0)
+
+    assert not changed
+    assert messages[0]["content"][0]["toolResult"]["content"] == [{"json": small_json}]
+
+
+def test_placeholder_truncation_is_idempotent():
+    manager = SlidingWindowConversationManager(window_size=10)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "toolResult": {
+                        "toolUseId": "1",
+                        "content": [
+                            {"video": {"format": "mp4", "source": {"bytes": b"video"}}},
+                            {"json": {"data": "X" * 500}},
+                        ],
+                        "status": "success",
+                    }
+                }
+            ],
+        }
+    ]
+
+    assert manager._truncate_tool_results(messages, 0)
+    snapshot = copy.deepcopy(messages)
+    assert not manager._truncate_tool_results(messages, 0)
+    assert messages == snapshot
 
 
 # ==============================================================================
