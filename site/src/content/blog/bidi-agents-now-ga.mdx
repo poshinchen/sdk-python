@@ -15,11 +15,11 @@ draft: false
 
 The speech-to-text voice agents lack a lot of conversational magic with users compared to using a voice model.
 
-It's a way better experience when a voice agent, hooked up to a voice model, understood a user *sounded* stressed rather than needing the prompt to contain "I'm stressed". Currently, the majority of voice agents rely on speech-to-text because it's easier to debug and eval, but a big tradeoff is those agents miss input that would've made the interaction much more conversational. Today we're announcing Bidi Agents in GA: the easiest way to create and monitor speech-to-speech voice agents with support for Amazon Nova Sonic, OpenAI, and Gemini models.
+It's a way better experience when a voice agent, hooked up to a voice model, can tell a user sounds stressed rather than needing the prompt to contain "I'm stressed". Currently, the majority of voice agents rely on speech-to-text because it's easier to debug and eval, but a big tradeoff is those agents miss input that would've made the interaction much more conversational. Today we're announcing Bidi Agents in GA: the easiest way to create and monitor speech-to-speech voice agents with support for Amazon Nova Sonic, OpenAI, and Gemini models.
 
-Bidi Agents connect with frontier voice models like GPT-Live-1, Gemini 3.8 Live, and Amazon Nova 2 Sonic. We recently prototyped a Bidi agent powered by this model to Zoom calls, so it could chat with us during brainstorms and execute web search to confirm missing data. Bidi Agents makes it easy to switch to a different provider while remaining observable. Our telemetry captures OTEL spans for session, each model's response, each tool call, and token usage.
+Bidi Agents connect with frontier voice models like GPT-Realtime-2, Gemini 3.8 Live, and the [newly released Amazon Nova 2.5 Sonic](https://aws.amazon.com/about-aws/whats-new/2026/10/amazon-nova-2.5-Sonic/). The improved reasoning from Nova 2.5 Sonic shows a leap for what's possible with voice agents. We recently prototyped a Bidi agent powered by this model to Zoom calls, so it could chat with us during brainstorms and execute web search to confirm missing data. Bidi Agents makes it easy to switch to a different provider while remaining observable. Our telemetry captures OTEL spans for session, each model's response, each tool call, and token usage.
 
-Bidi Agents also ensure the conversation can continue for as long as you want it to. Most voice models currently enforce session limits that could interrupt a conversation, however, Bidi Agents keeps the connection alive by restarting it in the background before the session cap is hit. For example, Nova 2 Sonic's 8 minute limit can be configured in Bidi Agents to run as long as you want it to.
+Bidi Agents also ensure the conversation can continue for as long as you want it to. Most voice models currently enforce session limits that could interrupt a conversation, however, Bidi Agents keeps the connection alive by restarting it in the background before the session cap is hit. For example, Nova 2.5 Sonic's 8 minute limit can be configured in Bidi Agents to run as long as you want it to.
 
 We also included echo suppression for microphone input in Bidi Agents, so speech comes through clearly even with background noise. It also solves the issue where a model may interrupt itself if a device's speakers are open, though using headphones is also an option.
 
@@ -44,7 +44,7 @@ from strands.bidi.models import BedrockNovaSonicModel
 
 
 async def main():
-    model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
+    model = BedrockNovaSonicModel(model_id="amazon.nova-2-5-sonic")
 
     agent = BidiAgent(
         model=model,
@@ -56,6 +56,7 @@ async def main():
 
     audio = AudioIO(audio_processor=True)
 
+    # Runs until you press Ctrl+C.
     await agent.run(
         inputs=[audio.input()],
         outputs=[audio.output()],
@@ -67,7 +68,7 @@ asyncio.run(main())
 
 `BidiAgent` manages the conversation while `AudioIO` handles microphone input and speaker output. Audio streams in both directions, and users can interrupt the agent while it's speaking.
 
-The BiDiAgent is model provider agnostic. For example, if you wanted to use OpenAI instead you can replace the model construction before starting the session:
+The BidiAgent is model provider agnostic. For example, if you wanted to use OpenAI instead you can replace the model construction before starting the session:
 
 ```python
 import os
@@ -75,6 +76,7 @@ from strands.bidi.models import OpenAIRealtimeModel
 
 model = OpenAIRealtimeModel(
     model_id=os.environ["OPENAI_REALTIME_MODEL_ID"],
+    transcription_model_id="gpt-4o-transcribe",
 )
 ```
 
@@ -122,7 +124,7 @@ The voice model decides when to call the research tool, and the separate harness
 
 Voice model providers limit how long a connection can stay open. A troubleshooting call can easily run longer than a single connection allows.
 
-BiDi Agents proactively restart the provider connection before its configured limit and carry conversation context into the replacement connection using the provider's supported mechanism. The agent looks for a turn boundary before reconnecting, with a bounded wait so it can reconnect before the deadline.
+Bidi Agents proactively restart the provider connection before its configured limit and carry conversation context into the replacement connection using the provider's supported mechanism. The agent looks for a turn boundary before reconnecting, with a bounded wait so it can reconnect before the deadline.
 
 This lets a conversation continue across multiple provider connections. Reconnect timing is configurable per provider, and hooks expose streamed events and restarts, so your application can observe them.
 
@@ -134,6 +136,7 @@ Enable microphone processing with `AudioIO(audio_processor=True)`. This turns on
 
 ```python
 import asyncio
+import os
 
 from strands.bidi.agent import BidiAgent
 from strands.bidi.io import AudioIO
@@ -143,7 +146,7 @@ from strands.bidi.models import BedrockNovaSonicModel
 async def main():
     agent = BidiAgent(
         model=BedrockNovaSonicModel(
-            model_id="amazon.nova-2-sonic-v1:0",
+            model_id=os.environ["NOVA_SONIC_MODEL_ID"],
         ),
         system_prompt="Keep your responses concise and conversational.",
     )
@@ -167,7 +170,7 @@ Echo cancellation uses the agent's playback audio as a reference to reduce that 
 
 Debugging a voice agent involves more than reading its final answer. You need to see when the model responded, how long a tool took, and whether the connection restarted during the conversation.
 
-BiDi Agents emit OpenTelemetry spans for the session, model responses, tool calls, connection establishment, and connection restarts. Session spans include reported token usage, while response spans record time from response start to the first audio chunk.
+Bidi Agents emit OpenTelemetry spans for the session, model responses, tool calls, connection establishment, and connection restarts. Session spans include reported token usage, while response spans record time from response start to the first audio chunk.
 
 Use the same telemetry setup as other Strands agents:
 
@@ -188,15 +191,15 @@ export OTEL_SEMCONV_STABILITY_OPT_IN="gen_ai_unredacted_attributes="
 
 This controls sensitive trace attributes. Application logs and persisted conversation history need their own data-handling configuration.
 
-## FAQ
+## Frequently Asked Questions
 
 ### Can I reuse an existing Strands application?
 
-You can reuse tools, supported session managers, hooks, and application context. `BidiAgent` has a continuous streaming lifecycle, so the application's input and output handling changes. Features that depend on the regular agent loop should be checked for BiDi support.
+You can reuse tools, supported session managers, hooks, and application context. `BidiAgent` has a continuous streaming lifecycle, so the application's input and output handling changes. Features that depend on the regular agent loop should be checked for Bidi support.
 
 ### Can conversations survive a connection restart?
 
-BiDi supports automatic connection renewal and conversation continuity. Persistence across application restarts is a separate concern handled through session management, with capabilities and history limits that vary by provider.
+Bidi supports automatic connection renewal and conversation continuity. Persistence across application restarts is a separate concern handled through session management, with capabilities and history limits that vary by provider.
 
 ### Can I use this in a browser or mobile application?
 
@@ -208,7 +211,7 @@ Use OpenTelemetry for session usage, response timing, tool execution, and connec
 
 ### What does general availability mean for the API?
 
-The supported BiDi API follows the SDK's versioning and deprecation policy. Our latest docs will show how to be set up with the latest.
+The supported Bidi API follows the SDK's versioning and deprecation policy. Our latest docs will show how to be set up with the latest.
 
 Start with a voice conversation, add a tool your application already uses, and try the same interaction across model providers. The Strands bidirectional streaming quickstart includes provider setup and examples for building further.
 
