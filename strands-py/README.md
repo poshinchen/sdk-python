@@ -230,7 +230,7 @@ from strands.bidi.models import BedrockNovaSonicModel
 
 
 async def main():
-    model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
+    model = BedrockNovaSonicModel(model_id="amazon.nova-2-5-sonic")
     agent = BidiAgent(model=model)
     audio_io = AudioIO()
 

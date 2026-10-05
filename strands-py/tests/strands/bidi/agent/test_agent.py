@@ -391,7 +391,7 @@ def test_bidi_agent_init_with_default_model(options):
     agent = BidiAgent(**options)
 
     assert isinstance(agent.model, BedrockNovaSonicModel)
-    assert agent.model.model_id == "amazon.nova-2-sonic-v1:0"
+    assert agent.model.model_id == "amazon.nova-2-5-sonic"
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="BedrockNovaSonicModel is only supported for Python 3.12+")
