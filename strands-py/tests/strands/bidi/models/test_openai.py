@@ -109,7 +109,7 @@ def messages():
 @pytest.mark.parametrize("status", ["completed", "cancelled"])
 @pytest.mark.parametrize("include_details", [False, True])
 def test_response_usage_token_details(model, status, include_details):
-    """Response usage keeps totals separate from optional, overlapping breakdowns."""
+    """Usage precedes response stop and keeps totals separate from optional breakdowns."""
     usage = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
     if include_details:
         usage.update(
@@ -126,7 +126,6 @@ def test_response_usage_token_details(model, status, include_details):
         {"type": "response.done", "response": {"id": "r1", "status": status, "usage": usage}}
     )
     exp_events = [
-        BidiResponseStopEvent("r1"),
         BidiUsageEvent(
             input_tokens=100,
             output_tokens=20,
@@ -134,6 +133,7 @@ def test_response_usage_token_details(model, status, include_details):
             input_token_details={"text": 70, "audio": 30, "image": 0, "cache_read": 50} if include_details else None,
             output_token_details={"text": 8, "audio": 12, "reasoning": 5} if include_details else None,
         ),
+        BidiResponseStopEvent("r1"),
     ]
     assert tru_events == exp_events
 
@@ -147,15 +147,32 @@ async def test_receive_preserves_native_order_with_late_transcription(model, moc
         {"type": "response.cancelled", "response": {"id": "r1"}},
         {
             "type": "response.done",
-            "response": {"id": "r1", "status": "cancelled", "status_details": {"reason": "turn_detected"}},
+            "response": {
+                "id": "r1",
+                "status": "cancelled",
+                "status_details": {"reason": "turn_detected"},
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            },
         },
         {
             "type": "response.done",
-            "response": {"id": "r1", "status": "cancelled", "status_details": {"reason": "turn_detected"}},
+            "response": {
+                "id": "r1",
+                "status": "cancelled",
+                "status_details": {"reason": "turn_detected"},
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            },
         },
         {"type": "conversation.item.input_audio_transcription.delta", "item_id": "user-1", "delta": "Earlier input."},
         {"type": "response.created", "response": {"id": "r2"}},
-        {"type": "response.done", "response": {"id": "r2", "status": "completed"}},
+        {
+            "type": "response.done",
+            "response": {
+                "id": "r2",
+                "status": "completed",
+                "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+            },
+        },
         {"type": "input_audio_buffer.committed", "item_id": "user-2"},
         {"type": "conversation.item.input_audio_transcription.delta", "item_id": "user-2", "delta": "Hi"},
         {"type": "conversation.item.input_audio_transcription.completed", "item_id": "user-2", "transcript": "Hi"},
@@ -171,9 +188,11 @@ async def test_receive_preserves_native_order_with_late_transcription(model, moc
         BidiTranscriptStartEvent("user", content_id="user-1"),
         BidiResponseStartEvent("r1"),
         BidiBargeInEvent(),
+        BidiUsageEvent(0, 0, 0),
         BidiResponseStopEvent("r1"),
         BidiTranscriptDeltaEvent("Earlier input.", "user", content_id="user-1"),
         BidiResponseStartEvent("r2"),
+        BidiUsageEvent(2, 3, 5),
         BidiResponseStopEvent("r2"),
         BidiTranscriptStartEvent("user", content_id="user-2"),
         BidiTranscriptDeltaEvent("Hi", "user", content_id="user-2"),
