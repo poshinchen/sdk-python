@@ -489,6 +489,8 @@ export class Agent implements LocalAgent, InvokableAgent {
   private _abortSignal: AbortSignal = this._abortController.signal
   private _printer?: Printer
   private _structuredOutputSchema?: z.ZodSchema | undefined
+  /** Custom trace attributes passed at construction. */
+  private readonly _traceAttributes?: Record<string, AttributeValue>
   /** Tracer instance for creating and managing OpenTelemetry spans. */
   private _tracer: Tracer
   /** Meter instance for accumulating loop metrics during invocation. */
@@ -645,6 +647,9 @@ export class Agent implements LocalAgent, InvokableAgent {
 
     // Store structured output schema
     this._structuredOutputSchema = config?.structuredOutputSchema
+
+    // Store trace attributes for baggage override
+    if (config?.traceAttributes) this._traceAttributes = config.traceAttributes
 
     // Initialize tracer - OTEL returns no-op tracer if not configured
     this._tracer = new Tracer(config?.traceAttributes)
@@ -974,6 +979,11 @@ export class Agent implements LocalAgent, InvokableAgent {
    */
   get metrics(): AgentMetrics {
     return this._meter.metrics
+  }
+
+  /** The agent's OpenTelemetry tracer, for inspecting trace state. */
+  get tracer(): Tracer {
+    return this._tracer
   }
 
   /**
@@ -1562,6 +1572,7 @@ export class Agent implements LocalAgent, InvokableAgent {
 
     // Start agent trace span
     this._meter.startNewInvocation()
+    this._tracer.updateBaggageEntries({ 'session.id': String(this._traceAttributes?.['session.id'] ?? this.sessionId) })
     const agentModelId = this.model.modelId
     const agentSpanOptions: Parameters<Tracer['startAgentSpan']>[0] = {
       messages: inputMessages,
