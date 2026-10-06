@@ -121,7 +121,6 @@ const PROTECTED = [
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
   MANAGE_TOOL_NAME,
-  'skills',
 ]
 const protectedSpecs = PROTECTED.map((name) => spec(name, 'Protected'))
 

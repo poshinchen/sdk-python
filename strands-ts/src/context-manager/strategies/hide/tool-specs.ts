@@ -31,6 +31,9 @@ import type { ToolSearchStrategy } from './search/index.js'
  * - `string[]` — `toolSpec::*` (every spec) or `toolSpec::<name>` entries name the candidates;
  *   a `!toolSpec::<name>` entry is pinned: always visible, never a candidate, and outside the `keep` budget
  *
+ * Pin any plugin tool the model is told to call by injected prompt text (for `AgentSkills`,
+ * `'!toolSpec::skills'`), since a hidden spec cannot be called.
+ *
  * @internal
  */
 export type HideToolSpecsTarget = 'toolSpecs' | string[]
@@ -83,19 +86,18 @@ const TOOL_SPEC_WILDCARD = `${TOOL_SPEC_PREFIX}*`
 
 /**
  * Tools that SDK-injected content tells the model to call: the structured-output tool, the
- * retrieval tools whose offload placeholders reference them, the background-task tool whose
- * synthetic tool uses report task completion, and the skills tool the system prompt's
- * available_skills section points at. Never hidden. Tools from plugins outside the SDK with the
- * same property are pinned by the user with `!toolSpec::<name>`.
+ * retrieval tools whose offload placeholders reference them, and the background-task tool whose
+ * synthetic tool uses report task completion. Never hidden.
+ *
+ * Plugin tools with the same property that are not listed here, such as the `skills` tool whose
+ * `available_skills` prompt section `AgentSkills` injects, are pinned by the user with
+ * `!toolSpec::<name>`; opting into selection means owning which plugin tools stay visible.
  */
 const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
   STRUCTURED_OUTPUT_TOOL_NAME,
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
   BACKGROUND_TASK_TOOL_NAME,
-  // AgentSkills is Node-only (it reads skills from disk), and Hide must load in the browser, so
-  // its tool name is spelled here; the skills test suite pins the two together.
-  'skills',
 ])
 
 /**

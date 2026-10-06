@@ -12,9 +12,6 @@ import { BeforeInvocationEvent } from '../../hooks/events.js'
 import { TextBlock, type SystemContentBlock } from '../../types/messages.js'
 import { logger } from '../../logging/logger.js'
 import { Skill } from './skill.js'
-
-/** Name of the activation tool; the system prompt's available_skills section tells the model to call it. @internal */
-export const SKILLS_TOOL_NAME = 'skills'
 import type { Plugin } from '../../plugins/plugin.js'
 import type { LocalAgent } from '../../types/agent.js'
 import type { Sandbox } from '../../sandbox/base.js'
@@ -333,7 +330,7 @@ export class AgentSkills implements Plugin {
    */
   private _createSkillsTool(): Tool {
     return tool({
-      name: SKILLS_TOOL_NAME,
+      name: 'skills',
       description:
         'Activate a skill to load its full instructions. ' +
         'Use this tool to load the complete instructions for a skill listed in ' +

@@ -38,6 +38,8 @@ interface HideNamespace {
  * Hide.toolSpecs({ keep: 5 }).when({ count: 20 })
  * // Pin ask_user and finish: always visible, outside keep and count (count sees 18 of 20 tools here)
  * Hide.toolSpecs(['toolSpec::*', '!toolSpec::ask_user', '!toolSpec::finish'], { keep: 15 }).when({ count: 18 })
+ * // With AgentSkills, pin its tool: the system prompt tells the model to call it
+ * Hide.toolSpecs(['toolSpec::*', '!toolSpec::skills'])
  * // Only the billing tools are candidates; everything else stays visible
  * Hide.toolSpecs(['toolSpec::billing_search', 'toolSpec::billing_summary'], { keep: 1 })
  * // Never show debug_dump, and show only pinned tools if search fails
