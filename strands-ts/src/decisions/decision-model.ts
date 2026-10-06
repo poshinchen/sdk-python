@@ -2,9 +2,9 @@
  * Base interface for making structured "decisions" from inside the SDK.
  */
 
-import { SpanKind, SpanStatusCode } from '@opentelemetry/api'
+import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 
-import { getTracer } from '../telemetry/config.js'
+import { getServiceName } from '../telemetry/utils.js'
 import type { DecisionInput, DecisionResult, Question } from './types.js'
 
 /**
@@ -28,7 +28,7 @@ export abstract class DecisionModel {
   async ask<Q extends Record<string, Question>>(state: DecisionInput, questions: Q): Promise<DecisionResult<Q>> {
     validateQuestions(questions)
 
-    const span = getTracer().startSpan('decision', {
+    const span = trace.getTracer(getServiceName()).startSpan('decision', {
       kind: SpanKind.INTERNAL,
       attributes: {
         'gen_ai.operation.name': 'decision',
