@@ -118,7 +118,13 @@ Every `DecisionResult` carries input, output, and total tokens read from the mod
 
 ### System One Decision Models
 
-Since most system one model providers follow an api that is similar enough to the interface proposed above, the actual implementation details can be hashed out in the pull requests. We should target the market leaders as decision model providers initially: TypeSafeAI Jev, OpenAI Decisions API, and Strands Decider(vended from its own repo). When Bedrock hosts system one models, we should integrate with it as well. Others can be considered on a case-by-case basis.
+Since most system one model providers follow an api that is similar enough to the interface proposed above, the actual implementation details can be hashed out in the pull requests. For a summary of the shared API shape, see [the Jev AI API contract write-up on Hugging Face](https://huggingface.co/blog/sora-2/typesafe-ai-model-and-jev-ai-api-a-production-inte#the-jev-ai-api-contract). We should target the market leaders as decision model providers initially:
+
+- [TypeSafeAI Jev](https://docs.typesafe.ai/introduction)
+- [OpenAI Decisions API](https://decisionapi.net/)
+- [Strands Decider](https://github.com/strands-labs/strands-decider) (vended from its own repo)
+
+When Bedrock hosts system one models, we should integrate with it as well. Others can be considered on a case-by-case basis.
 
 ## Integration points for `DecisionModel`
 
