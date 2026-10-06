@@ -144,6 +144,35 @@ describe('setupTracer (node-specific)', () => {
       expect(provider['_resource'].attributes['deployment.environment']).toBe('production')
     })
   })
+
+  describe('BaggageSpanProcessor', () => {
+    it('stamps only managed baggage keys as span attributes', async () => {
+      const { propagation, context } = await import('@opentelemetry/api')
+      const telemetry = await import('../index.js')
+      const provider = telemetry.setupTracer()
+
+      // Drive the composite processor that setupTracer wired up
+      const processor = (provider as any)._activeSpanProcessor
+
+      const attributes: Record<string, unknown> = {}
+      const mockSpan = {
+        setAttribute: (k: string, v: unknown) => {
+          attributes[k] = v
+        },
+      }
+
+      const bag = propagation
+        .createBaggage()
+        .setEntry('session.id', { value: 'test-42' })
+        .setEntry('tenant.id', { value: 'acme' })
+      const baggageCtx = propagation.setBaggage(context.active(), bag)
+
+      processor.onStart(mockSpan, baggageCtx)
+
+      expect(attributes['session.id']).toBe('test-42')
+      expect(attributes['tenant.id']).toBeUndefined()
+    })
+  })
 })
 
 describe('setupMeter (node-specific)', () => {

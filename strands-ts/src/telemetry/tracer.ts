@@ -206,12 +206,6 @@ export class Tracer {
    */
   private readonly _traceAttributes: Record<string, AttributeValue>
 
-  /**
-   * Baggage entries injected into the OTel context for every span.
-   * Set via {@link updateBaggageEntries}.
-   */
-  private _baggageEntries: Record<string, string> = {}
-
   /** Root span for the current agent invocation. */
   private _agentSpan: Span | undefined
 
@@ -274,17 +268,6 @@ export class Tracer {
    */
   get localTraces(): AgentTrace[] {
     return this._traceState.traces
-  }
-
-  /**
-   * Merge baggage entries into the set injected into every span's OTel context.
-   *
-   * Keys already present in the ambient OTel context are not overwritten.
-   *
-   * @param entries - Key-value pairs to set as W3C baggage entries.
-   */
-  updateBaggageEntries(entries: Record<string, string>): void {
-    this._baggageEntries = { ...this._baggageEntries, ...entries }
   }
 
   /**
@@ -1020,21 +1003,6 @@ export class Tracer {
         if (bag) ctx = propagation.setBaggage(ctx, bag)
       } catch {
         // getBaggage can fail in mocked/no-op environments — fall through to ROOT_CONTEXT.
-      }
-    }
-
-    // Inject baggage entries into the span context, skipping keys that already exist in the context.
-    if (Object.keys(this._baggageEntries).length > 0) {
-      try {
-        let bag = propagation.getBaggage(ctx) ?? propagation.createBaggage()
-        for (const [key, value] of Object.entries(this._baggageEntries)) {
-          if (!bag.getEntry(key)) {
-            bag = bag.setEntry(key, { value })
-          }
-        }
-        ctx = propagation.setBaggage(ctx, bag)
-      } catch (err) {
-        logger.warn(`error=<${err}> | failed to inject baggage entries into span context`)
       }
     }
 
