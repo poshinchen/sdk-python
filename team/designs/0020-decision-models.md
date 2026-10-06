@@ -34,10 +34,10 @@ export abstract class DecisionModel {
 
 export interface Question {
   instructions: string
-  options: 'bool' | string[],
+  choices: 'boolean' | readonly string[]
   uncertainOptions?: {
     allow: boolean  // default true
-    threshold?: number // 0.5–1.0, default 0.5. Only read by implementations that
+    threshold?: number // [0, 1], default 0.5. Only read by implementations that
     // return per-answer confidence (e.g. System One). The implementation yields
     // `Uncertain` when the question's confidence falls below this value; see
     // the System One section for the exact mapping per answer type.
@@ -48,19 +48,15 @@ export class Uncertain { constructor(public readonly reason?: string) {} }
 
 
 export interface DecisionResult<Q extends Record<string, Question> = Record<string, Question>> {
-  answers: { [K in keyof Q]: bool | string[] | Uncertain }
+  answers: { [K in keyof Q]: boolean | string | Uncertain }
   usage: { inputTokens: number; outputTokens: number; totalTokens: number }
-  // Open-ended per-call metadata. Implementations populate whatever is relevant —
-  // `LLMDecisionModel` might store `{ modelId, latencyMs }`; `SystemOneDecisionModel`
-  // might add `{ providerName, probabilities, confidence }`. Callers narrow when they
-  // know the implementation they're calling.
-  metadata: Record<string, unknown>
+  metadata: { latencyMs: number }
 }
 
 export type DecisionInput = string | ContentBlock[] | Message[]
 ```
 
-`ask` is generic over the questions map, and `DecisionResult.answers` is a mapped type keyed off the same map. Each answer's type is derived from its question's `options`: a `'bool'` question yields `boolean | Uncertain`, a string-literal tuple yields that tuple's union plus `Uncertain`.
+`ask` is generic over the questions map, and `DecisionResult.answers` is a mapped type keyed off the same map. Each answer's type is derived from its question's `choices`: a `'boolean'` question yields `boolean | Uncertain`, a string-literal tuple yields that tuple's union plus `Uncertain`.
 
 Lets say we start with an `LLMDecisionModel` as an implementation of this interface (more about this discussed below). A customer may use it as follows:
 
@@ -70,12 +66,12 @@ const llmDecisionModel = new LLMDecisionModel(new BedrockModel())
 const result = await llmDecisionModel.ask('The fruit is an apple', {
   color: {
     instructions: 'What color is the fruit?',
-    options: ['red', 'green', 'blue'] as const,
+    choices: ['red', 'green', 'blue'] as const,
   },
   isFruit: {
     instructions: 'Is the thing talked about a fruit?',
-    options: 'bool',
-    allowUncertain: false
+    choices: 'boolean',
+    uncertainOptions: { allow: false },
   },
 })
 
@@ -96,17 +92,17 @@ const llmDecisionModel = new LLMDecisionModel(new BedrockModel())
 const result = await llmDecisionModel.ask('The fruit is an apple', {
   color: {
     instructions: 'What color is the fruit?',
-    options: ['red', 'green', 'blue'] as const,
+    choices: ['red', 'green', 'blue'] as const,
   },
   isFruit: {
     instructions: 'Is the thing talked about a fruit?',
-    options: 'bool',
-    allowUncertain: false
+    choices: 'boolean',
+    uncertainOptions: { allow: false },
   },
 })
 
 if (result.answers.color instanceof Uncertain) {
-  console.log("RESULT UNCERTAIN")
+  console.log('RESULT UNCERTAIN')
 }
 ```
 
@@ -139,15 +135,15 @@ Candidate callers in the SDK, ordered roughly by how directly the primitive fits
 
 ## Future Work
 
-- **Score questions.** Widen `Question.options` with a third `{ kind: 'score', levels }` shape and extend `AnswerOf<Q>` to yield `number | Uncertain`, mapping to System One models score results
-- **Uncertainty default handling.** Instead of each customer including custom logic to handle default handling, we can include some default option to return if the model is uncertain. Some kind of `uncertaintyOptions.default` setting.
+- **Score questions.** Widen `Question.choices` with a third `{ kind: 'score', levels }` shape and extend `AnswerOf<Q>` to yield `number | Uncertain`, mapping to System One models' score results.
+- **Uncertainty default handling.** Instead of each customer including custom logic to handle default handling, we can include some default option to return if the model is uncertain. Some kind of `uncertainOptions.default` setting.
 - **ClassifierStrategy rewrite.** A thin `DecisionStrategy` routing passthrough + `ClassifierStrategy` as a preset on top, dropping ~325–375 lines of scaffolding across the two SDKs. First real caller that validates the primitive against production load.
-- **Python port.** Mirror the TypeScript design, swapping `StructuredOutputTool` + `toolChoice` for `model.structured_output` with a dynamic Pydantic model. Names convert mechanically (`allowUncertain` ↔ `allow_uncertain`).
+- **Python port.** Mirror the TypeScript design, swapping `StructuredOutputTool` + `toolChoice` for `model.structured_output` with a dynamic Pydantic model. Names convert mechanically (`uncertainOptions` ↔ `uncertain_options`, `choices` stays as `choices`).
 - **Agent-level usage.** When [#4005](https://github.com/strands-agents/harness-sdk/pull/4005) merges, the abstract base's `ask` wires `DecisionResult.usage` into `accumulatedUsage` under `source='decision'`.
 
 ## Appendix: fully typed interface
 
-The Interface section above is deliberately simplified for readability. The full version used by the implementation is generic over the question map, so each answer's static type is derived from its question's `options` — a `'bool'` question yields `boolean | Uncertain`, a string-literal tuple yields that tuple's union plus `Uncertain`.
+The Interface section above is deliberately simplified for readability. The full version used by the implementation is generic over the question map, so each answer's static type is derived from its question's `choices` — a `'boolean'` question yields `boolean | Uncertain`, a string-literal tuple yields that tuple's union plus `Uncertain`.
 
 ```ts
 export abstract class DecisionModel {
@@ -166,12 +162,12 @@ export abstract class DecisionModel {
   ): Promise<DecisionResult<Q>>
 }
 
-export interface Question<O extends 'bool' | readonly string[] = 'bool' | readonly string[]> {
+export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | readonly string[]> {
   instructions: string
-  options: O
+  choices: C
   uncertainOptions?: {
     allow: boolean  // default true
-    threshold?: number // 0.5–1.0, default 0.5. Only read by implementations that
+    threshold?: number // [0, 1], default 0.5. Only read by implementations that
     // return per-answer confidence (e.g. System One). The implementation yields
     // `Uncertain` when the question's confidence falls below this value; see
     // the System One section for the exact mapping per answer type.
@@ -183,22 +179,18 @@ export class Uncertain { constructor(public readonly reason?: string) {} }
 export interface DecisionResult<Q extends Record<string, Question> = Record<string, Question>> {
   answers: { [K in keyof Q]: AnswerOf<Q[K]> }
   usage: { inputTokens: number; outputTokens: number; totalTokens: number }
-  // Open-ended per-call metadata. Implementations populate whatever is relevant —
-  // `LLMDecisionModel` might store `{ modelId, latencyMs }`; `SystemOneDecisionModel`
-  // might add `{ providerName, probabilities, confidence }`. Callers narrow when they
-  // know the implementation they're calling.
-  metadata: Record<string, unknown>
+  metadata: { latencyMs: number }
 }
 
-// Statically derive each question's answer type from its options.
+// Statically derive each question's answer type from its choices.
 export type AnswerOf<Q> =
-  // If 'bool', then the possible return types are True | False | Uncertain
-  Q extends Question<'bool'> ? boolean | Uncertain :
-  // If ['red', 'green'], then possible return types are 'red' | 'green' | Uncertain
+  // If 'boolean', then the possible return types are boolean | Uncertain
+  Q extends Question<'boolean'> ? boolean | Uncertain :
+  // If ['red', 'green'], then the possible return types are 'red' | 'green' | Uncertain
   Q extends Question<infer S extends readonly string[]> ? S[number] | Uncertain :
   never
 
 export type DecisionInput = string | ContentBlock[] | Message[]
 ```
 
-Callers get static narrowing without manual type assertions, provided the `options` tuple is passed with `as const` so TypeScript keeps the literals.
+Callers get static narrowing without manual type assertions, provided the `choices` tuple is passed with `as const` so TypeScript keeps the literals.
