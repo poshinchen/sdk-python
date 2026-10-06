@@ -8,6 +8,7 @@
 import { z } from 'zod'
 
 import { normalizeError } from '../errors.js'
+import { BedrockModel } from '../models/bedrock.js'
 import { Model } from '../models/model.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME, StructuredOutputTool } from '../tools/structured-output-tool.js'
 import { Message, TextBlock, type ContentBlock, type ToolUseBlock } from '../types/messages.js'
@@ -65,11 +66,12 @@ export class LLMDecisionModel extends DecisionModel {
    * Create an LLM-backed decision model.
    *
    * @param model - Underlying vended model; must honor forced `toolChoice` so
-   *   the structured-output tool is the only possible response.
+   *   the structured-output tool is the only possible response. Defaults to a
+   *   zero-config {@link BedrockModel}.
    * @param options - Prompt configuration.
    * @throws TypeError if `model` is not a {@link Model}.
    */
-  constructor(model: Model, options: LLMDecisionModelOptions = {}) {
+  constructor(model: Model = new BedrockModel(), options: LLMDecisionModelOptions = {}) {
     super()
     if (!(model instanceof Model)) throw new TypeError('model must be a Model')
     this._model = model
