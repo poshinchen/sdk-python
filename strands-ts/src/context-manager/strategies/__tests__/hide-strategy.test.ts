@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest'
 import { Hide } from '../hide/index.js'
 import { HideToolSpecsStrategy } from '../hide/tool-specs.js'
 import { MANAGE_TOOL_NAME } from '../../../background-tasks/background-tasks.js'
-import { SKILLS_TOOL_NAME } from '../../../vended-plugins/skills/agent-skills.js'
 import { logger } from '../../../logging/logger.js'
 import { InvokeModelStage } from '../../../middleware/stages.js'
 import { AfterInvocationEvent, BeforeInvocationEvent } from '../../../hooks/events.js'
@@ -122,7 +121,7 @@ const PROTECTED = [
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
   MANAGE_TOOL_NAME,
-  SKILLS_TOOL_NAME,
+  'skills',
 ]
 const protectedSpecs = PROTECTED.map((name) => spec(name, 'Protected'))
 

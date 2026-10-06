@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { AgentSkills } from '../agent-skills.js'
+import { AgentSkills, SKILLS_TOOL_NAME } from '../agent-skills.js'
+import { InvokeModelStage } from '../../../middleware/stages.js'
+import { Hide } from '../../../context-manager/strategies/hide/index.js'
+import type { InvokeModelContext } from '../../../middleware/stages.js'
+import type { ContextStrategy } from '../../../context-manager/types.js'
+import type { ToolSpec } from '../../../tools/types.js'
 import { Skill } from '../skill.js'
 import { BeforeInvocationEvent } from '../../../hooks/events.js'
-import { TextBlock, CachePointBlock } from '../../../types/messages.js'
+import { Message, TextBlock, CachePointBlock } from '../../../types/messages.js'
 import { createMockAgent, invokeTrackedHook, type MockAgent } from '../../../__fixtures__/agent-helpers.js'
 import { promises as fs } from 'fs'
 import * as path from 'path'
@@ -592,5 +597,42 @@ describe('AgentSkills', () => {
       expect(await plugin.getAvailableSkills()).toHaveLength(1)
       expect(agent.trackedHooks).toHaveLength(1)
     })
+  })
+})
+
+describe('AgentSkills and Hide', () => {
+  it('never has its tool hidden, under the name the plugin registers', async () => {
+    const plugin = new AgentSkills({ skills: [] })
+    const toolName = plugin.getTools()[0]!.name
+    expect(toolName).toBe(SKILLS_TOOL_NAME)
+
+    type InputHandler = (context: InvokeModelContext) => InvokeModelContext | Promise<InvokeModelContext>
+    let handler: InputHandler | undefined
+    const agent = createMockAgent({
+      extra: {
+        addMiddleware: ((stage: unknown, registered: InputHandler) => {
+          if (stage === InvokeModelStage.Input) handler = registered
+          return () => {}
+        }) as never,
+      },
+    })
+    const strategy = Hide.toolSpecs({ keep: 1, search: { search: async () => [{ name: 'alpha', score: 1 }] } })
+    ;(strategy as ContextStrategy).init?.(agent)
+    const toolSpecs: ToolSpec[] = [
+      { name: 'alpha', description: 'Alpha', inputSchema: { type: 'object', properties: {} } },
+      { name: 'beta', description: 'Beta', inputSchema: { type: 'object', properties: {} } },
+      plugin.getTools()[0]!.toolSpec,
+    ]
+    Object.assign(agent, { messages: [new Message({ role: 'user', content: [new TextBlock('alpha please')] })] })
+
+    const result = await handler!({
+      agent,
+      model: agent.model,
+      messages: agent.messages,
+      toolSpecs,
+      invocationState: {},
+    })
+
+    expect(result.toolSpecs.map((spec) => spec.name)).toEqual(['alpha', toolName])
   })
 })

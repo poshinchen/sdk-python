@@ -13,7 +13,6 @@ import { logger } from '../../../logging/logger.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME } from '../../../tools/structured-output-tool.js'
 import { TextBlock } from '../../../types/messages.js'
 import { RETRIEVAL_TOOL_NAME as OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME } from '../../../vended-plugins/context-offloader/plugin.js'
-import { SKILLS_TOOL_NAME } from '../../../vended-plugins/skills/agent-skills.js'
 import { RETRIEVAL_TOOL_NAME } from '../../retrieval-tool.js'
 import { BaseHideStrategy } from './base.js'
 import { KeywordToolSearchStrategy, contentTerms, namesTool } from './search/keyword.js'
@@ -94,7 +93,9 @@ const PROTECTED_TOOLS: ReadonlySet<string> = new Set([
   RETRIEVAL_TOOL_NAME,
   OFFLOADED_CONTENT_RETRIEVAL_TOOL_NAME,
   BACKGROUND_TASK_TOOL_NAME,
-  SKILLS_TOOL_NAME,
+  // AgentSkills is Node-only (it reads skills from disk), and Hide must load in the browser, so
+  // its tool name is spelled here; the skills test suite pins the two together.
+  'skills',
 ])
 
 /**
