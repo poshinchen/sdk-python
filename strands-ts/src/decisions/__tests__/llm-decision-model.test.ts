@@ -32,11 +32,15 @@ class RecordingModel extends MockMessageModel {
 }
 
 function answerModel(
-  input: Record<string, string>,
+  input: Record<string, string | { answer: string; reason?: string }>,
   usage: Usage = { inputTokens: 3, outputTokens: 2, totalTokens: 5 }
 ): RecordingModel {
+  const normalized: Record<string, { answer: string; reason?: string }> = {}
+  for (const [id, value] of Object.entries(input)) {
+    normalized[id] = typeof value === 'string' ? { answer: value } : value
+  }
   return new RecordingModel().addTurn(
-    { type: 'toolUseBlock', name: STRUCTURED_OUTPUT_TOOL_NAME, toolUseId: 'decision-1', input },
+    { type: 'toolUseBlock', name: STRUCTURED_OUTPUT_TOOL_NAME, toolUseId: 'decision-1', input: normalized },
     { stopReason: 'toolUse', usage }
   ) as RecordingModel
 }
@@ -83,6 +87,19 @@ describe('LLMDecisionModel', () => {
       expect(result.answers.color).toBeInstanceOf(Uncertain)
     })
 
+    it('returns Uncertain carrying the model-supplied reason', async () => {
+      const model = answerModel({ color: { answer: 'uncertain', reason: 'the input mentioned no color' } })
+      const decision = new LLMDecisionModel(model)
+
+      const result = await decision.ask('ambiguous', {
+        color: { instructions: 'color?', choices: ['red', 'green'] as const },
+      })
+
+      const answer = result.answers.color
+      expect(answer).toBeInstanceOf(Uncertain)
+      expect((answer as Uncertain).reason).toBe('the input mentioned no color')
+    })
+
     it('omits uncertain from the enum when a question opts out', async () => {
       const model = answerModel({ q: 'yes' })
       const decision = new LLMDecisionModel(model)
@@ -92,8 +109,10 @@ describe('LLMDecisionModel', () => {
       })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
-      const schema = toolSpec?.inputSchema as { properties?: Record<string, { enum?: string[] }> }
-      expect(schema.properties?.['q']?.enum).toEqual(['yes', 'no'])
+      const schema = toolSpec?.inputSchema as {
+        properties?: Record<string, { properties?: { answer?: { enum?: string[] } } }>
+      }
+      expect(schema.properties?.['q']?.properties?.answer?.enum).toEqual(['yes', 'no'])
     })
 
     it('appends uncertain to the enum by default', async () => {
@@ -103,8 +122,10 @@ describe('LLMDecisionModel', () => {
       await decision.ask('state', { q: { instructions: 'ok?', choices: ['yes', 'no'] as const } })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
-      const schema = toolSpec?.inputSchema as { properties?: Record<string, { enum?: string[] }> }
-      expect(schema.properties?.['q']?.enum).toEqual(['yes', 'no', 'uncertain'])
+      const schema = toolSpec?.inputSchema as {
+        properties?: Record<string, { properties?: { answer?: { enum?: string[] } } }>
+      }
+      expect(schema.properties?.['q']?.properties?.answer?.enum).toEqual(['yes', 'no', 'uncertain'])
     })
 
     it('forces the structured-output tool', async () => {
@@ -204,7 +225,7 @@ describe('LLMDecisionModel', () => {
 
     it('throws when the model omits usage metadata', async () => {
       const model = new MockMessageModel().addTurn(
-        { type: 'toolUseBlock', name: STRUCTURED_OUTPUT_TOOL_NAME, toolUseId: 'd', input: { q: 'true' } },
+        { type: 'toolUseBlock', name: STRUCTURED_OUTPUT_TOOL_NAME, toolUseId: 'd', input: { q: { answer: 'true' } } },
         { stopReason: 'toolUse' }
       )
       const decision = new LLMDecisionModel(model)

@@ -50,6 +50,10 @@ export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | 
 export class Uncertain {
   constructor(public readonly reason?: string) {}
 
+  toString(): string {
+    return this.reason !== undefined ? `Uncertain(${this.reason})` : 'Uncertain'
+  }
+
   toJSON(): { uncertain: true; reason?: string } {
     return { uncertain: true, ...(this.reason !== undefined && { reason: this.reason }) }
   }

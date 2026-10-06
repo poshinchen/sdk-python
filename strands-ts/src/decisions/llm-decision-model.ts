@@ -106,9 +106,9 @@ export class LLMDecisionModel extends DecisionModel {
       throw new Error('decision model returned no structured answers')
     }
 
-    let parsed: Record<string, string>
+    let parsed: Record<string, { answer: string; reason?: string }>
     try {
-      parsed = schema.parse(toolUse.input) as Record<string, string>
+      parsed = schema.parse(toolUse.input) as Record<string, { answer: string; reason?: string }>
     } catch (error) {
       throw new Error(`decision model returned an invalid answer set: ${normalizeError(error).message}`, {
         cause: error,
@@ -137,13 +137,19 @@ export class LLMDecisionModel extends DecisionModel {
   }
 }
 
-function buildAnswerSchema<Q extends Record<string, Question>>(questions: Q): z.ZodObject<Record<string, z.ZodEnum>> {
-  const shape: Record<string, z.ZodEnum> = {}
+function buildAnswerSchema<Q extends Record<string, Question>>(
+  questions: Q
+): z.ZodObject<Record<string, z.ZodObject<{ answer: z.ZodEnum; reason: z.ZodOptional<z.ZodString> }>>> {
+  const shape: Record<string, z.ZodObject<{ answer: z.ZodEnum; reason: z.ZodOptional<z.ZodString> }>> = {}
   for (const [id, question] of Object.entries(questions)) {
     const allowUncertain = question.uncertainOptions?.allow ?? true
     const literals = answerLiterals(question, allowUncertain)
-    const field = z.enum(literals as [string, ...string[]]).describe(question.instructions)
-    shape[id] = field
+    shape[id] = z
+      .object({
+        answer: z.enum(literals as [string, ...string[]]),
+        reason: z.string().optional().describe(`Explanation when answer is '${UNCERTAIN_LITERAL}'; omit otherwise.`),
+      })
+      .describe(question.instructions)
   }
   return z.object(shape).describe('Answer for each question in the input decision set.')
 }
@@ -154,30 +160,34 @@ function answerLiterals(question: Question, allowUncertain: boolean): readonly s
 }
 
 function convertAnswers<Q extends Record<string, Question>>(
-  raw: Record<string, string>,
+  raw: Record<string, { answer: string; reason?: string }>,
   questions: Q
 ): { [K in keyof Q]: AnswerOf<Q[K]> } {
   const answers = {} as { [K in keyof Q]: AnswerOf<Q[K]> }
   for (const id of Object.keys(questions) as (keyof Q)[]) {
     const question = questions[id]!
-    const value = raw[id as string]
-    if (value === undefined) throw new Error(`decision model omitted answer for question id=<${String(id)}>`)
-    answers[id] = convertSingleAnswer(question, value) as AnswerOf<Q[typeof id]>
+    const entry = raw[id as string]
+    if (entry === undefined) throw new Error(`decision model omitted answer for question id=<${String(id)}>`)
+    answers[id] = convertSingleAnswer(question, entry) as AnswerOf<Q[typeof id]>
   }
   return answers
 }
 
-function convertSingleAnswer(question: Question, value: string): boolean | string | Uncertain {
-  if (value === UNCERTAIN_LITERAL) return new Uncertain()
+function convertSingleAnswer(
+  question: Question,
+  entry: { answer: string; reason?: string }
+): boolean | string | Uncertain {
+  const { answer, reason } = entry
+  if (answer === UNCERTAIN_LITERAL) return new Uncertain(reason)
   if (question.choices === 'boolean') {
-    if (value === 'true') return true
-    if (value === 'false') return false
-    throw new Error(`decision model returned unexpected bool answer: ${value}`)
+    if (answer === 'true') return true
+    if (answer === 'false') return false
+    throw new Error(`decision model returned unexpected boolean answer: ${answer}`)
   }
-  if (!question.choices.includes(value)) {
-    throw new Error(`decision model returned out-of-range answer: ${value}`)
+  if (!question.choices.includes(answer)) {
+    throw new Error(`decision model returned out-of-range answer: ${answer}`)
   }
-  return value
+  return answer
 }
 
 function buildMessages(state: DecisionInput): Message[] {
