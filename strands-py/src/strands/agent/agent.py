@@ -28,8 +28,8 @@ from typing import (
     cast,
 )
 
-import opentelemetry.context as context_api
 from opentelemetry import baggage as baggage_api
+from opentelemetry import context as context_api
 from opentelemetry import trace as trace_api
 from pydantic import BaseModel
 
@@ -210,6 +210,7 @@ class Agent(AgentBase, LocalAgent):
         record_direct_tool_call: bool = True,
         load_tools_from_directory: bool = False,
         trace_attributes: Mapping[str, AttributeValue] | None = None,
+        baggage_attributes: Mapping[str, str] | None = None,
         *,
         aux_model: Model | str | None = None,
         agent_id: str | None = None,
@@ -278,6 +279,7 @@ class Agent(AgentBase, LocalAgent):
             load_tools_from_directory: Whether to load and automatically reload tools in the `./tools/` directory.
                 Defaults to False.
             trace_attributes: Custom trace attributes to apply to the agent's trace span.
+            baggage_attributes: Optional OTel baggage attributes for the duration of each agent invocation.
             agent_id: Optional ID for the agent, useful for session management and multi-agent scenarios.
                 Defaults to "default".
             name: name of the Agent
@@ -432,6 +434,7 @@ class Agent(AgentBase, LocalAgent):
                 ):
                     self.trace_attributes[k] = v
 
+        self.baggage_attributes: dict[str, str] = dict(baggage_attributes) if baggage_attributes else {}
         self.record_direct_tool_call = record_direct_tool_call
         self.load_tools_from_directory = load_tools_from_directory
 
@@ -1419,7 +1422,7 @@ class Agent(AgentBase, LocalAgent):
             # Process input and get message to add (if any)
             messages = await self._convert_prompt_to_messages(prompt)
 
-            with self._session_baggage_scope():
+            with self._baggage_scope():
                 self.trace_span = self._start_agent_trace_span(messages)
 
                 with trace_api.use_span(self.trace_span):
@@ -1886,17 +1889,20 @@ class Agent(AgentBase, LocalAgent):
         return messages
 
     @contextlib.contextmanager
-    def _session_baggage_scope(self) -> Generator[None, None, None]:
-        """Attach session.id as OTel baggage for the duration of the invocation.
+    def _baggage_scope(self) -> Generator[None, None, None]:
+        """Attach user-supplied baggage as OTel baggage for the duration of the invocation.
 
-        Skips if session.id is already present in the ambient context.
+        Each entry in ``self.baggage_attributes`` is set unconditionally (last-writer-wins
+        if a key already exists in the ambient baggage).
         """
-        if baggage_api.get_baggage("session.id") is None:
-            session_id = self.trace_attributes.get("session.id", self.session_id)
-            baggage_ctx = baggage_api.set_baggage("session.id", str(session_id))
-            token = context_api.attach(baggage_ctx)
-        else:
-            token = None
+        baggage_ctx = context_api.get_current()
+        changed = False
+
+        for key, value in self.baggage_attributes.items():
+            baggage_ctx = baggage_api.set_baggage(key, value, context=baggage_ctx)
+            changed = True
+
+        token = context_api.attach(baggage_ctx) if changed else None
         try:
             yield
         finally:

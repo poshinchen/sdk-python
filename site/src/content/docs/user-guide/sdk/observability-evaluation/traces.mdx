@@ -297,17 +297,6 @@ emits only the semantic-convention names.
 | `gen_ai.event.end_time` | When tool execution completed |
 | `gen_ai.choice` | Formatted tool result |
 
-### Session Attributes
-
-| Attribute | Description |
-|-----------|-------------|
-| `session.id` | The agent's session identifier, propagated via [OTel baggage](https://opentelemetry.io/docs/concepts/signals/baggage/) to every span in the trace |
-
-:::note[Baggage span processor]
-`session.id` is set as a baggage entry at invocation start and copied onto spans by a `BaggageSpanProcessor`.
-Python installs `opentelemetry-processor-baggage` automatically.
-:::
-
 ## Visualization and Analysis
 
 Traces can be visualized and analyzed using any OpenTelemetry-compatible tool:
@@ -394,8 +383,8 @@ agent = Agent(
     system_prompt="You are a helpful assistant that provides concise responses.",
     tools=[http_request, calculator],
     trace_attributes={
+        "session.id": "abc-1234",
         "user.id": "user-email-example@domain.com",
-        "environment": "production",
         "tags": [
             "Agent-SDK",
             "Okatank-Project",
