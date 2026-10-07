@@ -92,8 +92,9 @@ describe('LLMDecisionModel', () => {
         },
       })
 
-      expect(result.answers.color).toBe('red')
-      expect(result.answers.isFruit).toBe(true)
+      expect(Object.keys(result.answers)).toEqual(['color', 'isFruit'])
+      expect(result.answers.color).toEqual('red')
+      expect(result.answers.isFruit).toEqual(true)
       expect(result.usage).toEqual(DEFAULT_USAGE)
       expect(result.metadata.latencyMs).toBe(42)
     })
