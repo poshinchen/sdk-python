@@ -219,6 +219,11 @@ describe('subagent tool', () => {
       [{ mcpServers: new Choice([], true) }, /^mcpServers: new Choice\(\[\]\) offers no options/],
       [{ mcpServers: new Choice(['fs']) }, /^mcpServers: new Choice\(\.\.\.\) must set multiple to true/],
       [{ defaultPreset: 'reseacher' }, "defaultPreset 'reseacher' is not one of the presets: generalist."],
+      [{ context: new Fixed('al') }, 'context mode "al" must be one of: none, all, no_tools.'],
+      [
+        { context: new Choice(['none', new Option('shared', 'everything')]) },
+        'context mode "everything" must be one of',
+      ],
     ])('rejects invalid options %#', (options, message) => {
       expect(() => makeSubagent(options)).toThrow(message)
     })
@@ -285,6 +290,7 @@ describe('subagent tool', () => {
       [{ task: '' }, /Missing required parameter 'task'/],
       [{ task: '   ' }, /Missing required parameter 'task'/],
       [{ task: 42 }, /Missing required parameter 'task'/],
+      [{ task: 'x', instructions: ['not', 'a', 'string'] }, "Parameter 'instructions' must be a string."],
     ])('rejects invalid input %j as an error result without building a child', async (input, message) => {
       vi.spyOn(logger, 'warn').mockImplementation(() => {})
       const { builder, specs } = capturingBuilder()

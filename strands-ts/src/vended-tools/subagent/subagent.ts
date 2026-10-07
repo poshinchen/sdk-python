@@ -32,6 +32,8 @@ import { Message, TextBlock, ToolResultBlock } from '../../types/messages.js'
 import type { ContentBlock } from '../../types/messages.js'
 import { DEFAULT_SUBAGENT_DESCRIPTION, DEFAULT_SUBAGENT_MAX_DEPTH, GENERALIST } from './types.js'
 
+const CONTEXT_MODES: readonly string[] = ['none', 'all', 'no_tools']
+
 const DEPTH_STATE_KEY = 'strands.subagent_depth'
 
 const FORK_PREAMBLE =
@@ -135,6 +137,14 @@ export function makeSubagent(options: MakeSubagentOptions = {}): Tool {
     }
     if (!mcpServers.multiple) {
       throw new Error('mcpServers: new Choice(...) must set multiple to true; a subagent selects a subset of servers.')
+    }
+  }
+
+  const contextModes =
+    context instanceof Choice ? context.normalized().map((o) => context.valueFor(o.name)) : [context.value]
+  for (const mode of contextModes) {
+    if (!CONTEXT_MODES.includes(mode as string)) {
+      throw new Error(`context mode ${JSON.stringify(mode)} must be one of: ${CONTEXT_MODES.join(', ')}.`)
     }
   }
 
@@ -367,6 +377,9 @@ class SubagentTool extends Tool {
     }
 
     const spec = this._resolve(raw)
+    if (spec.instructions !== undefined && typeof spec.instructions !== 'string') {
+      return "Parameter 'instructions' must be a string."
+    }
     const build = this._builder ?? _defaultBuilder(parent as Agent)
     const child = build(spec)
     child.appState.set(DEPTH_STATE_KEY, depth - 1)
