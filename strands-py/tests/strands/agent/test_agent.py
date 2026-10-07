@@ -3883,16 +3883,134 @@ def test_baggage_attributes_default_empty():
     assert agent.baggage_attributes == {}
 
 
-def test_baggage_attributes_do_not_leak_after_invocation():
-    """Baggage set by baggage_attributes must not persist in the OTel context after the invocation ends."""
+@pytest.mark.asyncio
+async def test_baggage_attributes_isolation_across_concurrent_agents():
+    """Interleaved agents must each see only their own baggage_attributes inside tools."""
     from opentelemetry import baggage as baggage_api
 
-    model = MockedModelProvider([{"role": "assistant", "content": [{"text": "done"}]}])
-    agent = Agent(
-        model=model,
+    seen_a: dict = {}
+    seen_b: dict = {}
+
+    gate_a, gate_b = asyncio.Event(), asyncio.Event()
+
+    @strands.tool
+    async def tool_a() -> str:
+        """Tool for agent A: capture baggage, then interleave with agent B."""
+        seen_a["tenant.id"] = baggage_api.get_baggage("tenant.id")
+        gate_a.set()
+        await gate_b.wait()
+        return "done"
+
+    @strands.tool
+    async def tool_b() -> str:
+        """Tool for agent B: capture baggage, then interleave with agent A."""
+        seen_b["tenant.id"] = baggage_api.get_baggage("tenant.id")
+        gate_b.set()
+        await gate_a.wait()
+        return "done"
+
+    def _tool_then_text(tool_name):
+        return MockedModelProvider(
+            [
+                {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t", "name": tool_name, "input": {}}}]},
+                {"role": "assistant", "content": [{"text": "done"}]},
+            ]
+        )
+
+    agent_a = Agent(
+        model=_tool_then_text("tool_a"),
+        tools=[tool_a],
         callback_handler=None,
         baggage_attributes={"tenant.id": "acme"},
     )
-    agent("hi")
+    agent_b = Agent(
+        model=_tool_then_text("tool_b"),
+        tools=[tool_b],
+        callback_handler=None,
+        baggage_attributes={"tenant.id": "globex"},
+    )
 
-    assert baggage_api.get_baggage("tenant.id") is None, "tenant.id leaked into ambient context"
+    async def drain(agent):
+        async for _ in agent.stream_async("hi"):
+            pass
+
+    await asyncio.gather(drain(agent_a), drain(agent_b))
+
+    assert seen_a["tenant.id"] == "acme", f"agent A saw tenant.id={seen_a['tenant.id']}, expected 'acme'"
+    assert seen_b["tenant.id"] == "globex", f"agent B saw tenant.id={seen_b['tenant.id']}, expected 'globex'"
+
+
+def test_baggage_attributes_nested_agent_override_and_restore():
+    """Inner agent's baggage overrides outer's for its scope, then outer's is restored."""
+    from opentelemetry import baggage as baggage_api
+
+    seen_before_inner = {}
+    seen_inner = {}
+    seen_after_inner = {}
+
+    @strands.tool
+    def outer_probe_before() -> str:
+        """Capture outer baggage before the inner agent runs."""
+        seen_before_inner["tenant.id"] = baggage_api.get_baggage("tenant.id")
+        return "ok"
+
+    @strands.tool
+    def inner_probe() -> str:
+        """Capture baggage inside the inner agent."""
+        seen_inner["tenant.id"] = baggage_api.get_baggage("tenant.id")
+        return "ok"
+
+    @strands.tool
+    def outer_probe_after() -> str:
+        """Capture outer baggage after the inner agent finishes."""
+        seen_after_inner["tenant.id"] = baggage_api.get_baggage("tenant.id")
+        return "ok"
+
+    inner_agent = Agent(
+        model=MockedModelProvider(
+            [
+                {"role": "assistant", "content": [{"toolUse": {"toolUseId": "t", "name": "inner_probe", "input": {}}}]},
+                {"role": "assistant", "content": [{"text": "done"}]},
+            ]
+        ),
+        tools=[inner_probe],
+        callback_handler=None,
+        baggage_attributes={"tenant.id": "inner-corp"},
+        name="inner_agent",
+    )
+
+    outer_agent = Agent(
+        model=MockedModelProvider(
+            [
+                {
+                    "role": "assistant",
+                    "content": [{"toolUse": {"toolUseId": "t1", "name": "outer_probe_before", "input": {}}}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"toolUse": {"toolUseId": "t2", "name": "inner_agent", "input": {"user_message": "hi"}}}
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"toolUse": {"toolUseId": "t3", "name": "outer_probe_after", "input": {}}}],
+                },
+                {"role": "assistant", "content": [{"text": "done"}]},
+            ]
+        ),
+        tools=[outer_probe_before, inner_agent.as_tool(), outer_probe_after],
+        callback_handler=None,
+        baggage_attributes={"tenant.id": "outer-corp"},
+    )
+    outer_agent("hi")
+
+    assert seen_before_inner["tenant.id"] == "outer-corp", (
+        f"before inner: expected 'outer-corp', got {seen_before_inner['tenant.id']}"
+    )
+    assert seen_inner["tenant.id"] == "inner-corp", (
+        f"inside inner: expected 'inner-corp', got {seen_inner['tenant.id']}"
+    )
+    assert seen_after_inner["tenant.id"] == "outer-corp", (
+        f"after inner: expected 'outer-corp', got {seen_after_inner['tenant.id']}"
+    )
