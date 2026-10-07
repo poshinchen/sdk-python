@@ -1896,18 +1896,15 @@ class Agent(AgentBase, LocalAgent):
         if a key already exists in the ambient baggage).
         """
         baggage_ctx = context_api.get_current()
-        changed = False
 
         for key, value in self.baggage_attributes.items():
             baggage_ctx = baggage_api.set_baggage(key, value, context=baggage_ctx)
-            changed = True
 
-        token = context_api.attach(baggage_ctx) if changed else None
+        token = context_api.attach(baggage_ctx)
         try:
             yield
         finally:
-            if token is not None:
-                context_api.detach(token)
+            context_api.detach(token)
 
     def _start_agent_trace_span(self, messages: Messages) -> trace_api.Span:
         """Starts a trace span for the agent.
