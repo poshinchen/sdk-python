@@ -404,6 +404,24 @@ agent = Agent(
 </Tab>
 </Tabs>
 
+### Baggage Propagation
+
+Use `baggage_attributes` to propagate key-value pairs across process boundaries via the W3C `baggage` header. Unlike `trace_attributes`, baggage is not stamped onto spans. It travels through the OTel context and is available to downstream services.
+
+<Tabs>
+<Tab label="Python">
+```python
+agent = Agent(
+    system_prompt="You are a helpful assistant.",
+    baggage_attributes={
+        "tenant.id": "acme",
+        "env": "production",
+    },
+)
+```
+</Tab>
+</Tabs>
+
 ### Custom Spans
 
 You can access the configured tracer to create your own custom spans alongside the auto-instrumented ones:
