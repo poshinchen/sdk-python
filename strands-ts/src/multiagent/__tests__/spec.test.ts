@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   UNSET,
   AgentSpec,
@@ -15,6 +15,23 @@ import type { ResolveSpecAxes } from '../spec.js'
 import { Agent } from '../../agent/agent.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
+import { logger } from '../../logging/logger.js'
+import type { Sandbox } from '../../sandbox/base.js'
+
+/** Mock model that advertises itself as stateful. */
+class StatefulMockModel extends MockMessageModel {
+  override get stateful(): boolean {
+    return true
+  }
+}
+
+/** Reads the private fields the default builder propagates. */
+function internals(agent: Agent): {
+  _printer?: unknown
+  _tracer: { _traceAttributes: Record<string, unknown> }
+} {
+  return agent as unknown as { _printer?: unknown; _tracer: { _traceAttributes: Record<string, unknown> } }
+}
 
 const AXES: ResolveSpecAxes = {
   presets: {},
@@ -183,15 +200,57 @@ describe('_defaultBuilder', () => {
     expect(childToolNames).toEqual(['read', 'shell'])
   })
 
-  it('resolves only matching tools and silently skips unknown names', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('resolves only matching tools and warns about unknown tools and MCP servers', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const readTool = createMockTool('read', () => 'ok')
     const shellTool = createMockTool('shell', () => 'ok')
     const parent = new Agent({ model, tools: [readTool, shellTool], printer: false })
 
-    const childToolNames = _defaultBuilder(parent)(new AgentSpec({ tools: ['read', 'nonexistent'] }))
+    const childToolNames = _defaultBuilder(parent)(
+      new AgentSpec({ tools: ['read', 'nonexistent'], mcpServers: ['missing_server'] })
+    )
       .toolRegistry.list()
       .map((tool) => tool.name)
 
     expect(childToolNames).toEqual(['read'])
+    expect(warn).toHaveBeenCalledWith(
+      'tool_name=<nonexistent> | subagent requested tool but parent does not own it, skipping'
+    )
+    expect(warn).toHaveBeenCalledWith(
+      'server_name=<missing_server> | subagent requested MCP server but parent does not own it, skipping'
+    )
+  })
+
+  it('gives the child an auto context manager', () => {
+    const parent = new Agent({ model, printer: false })
+    expect(_defaultBuilder(parent)(new AgentSpec({})).contextManager).toBeDefined()
+  })
+
+  it('skips the context manager for a stateful model', () => {
+    const parent = new Agent({ model, printer: false })
+    const child = _defaultBuilder(parent)(new AgentSpec({ model: new StatefulMockModel() }))
+    expect(child.contextManager).toBeUndefined()
+  })
+
+  it("propagates the parent's sandbox", () => {
+    const sandbox = {} as unknown as Sandbox
+    const parent = new Agent({ model, printer: false, sandbox })
+    expect(_defaultBuilder(parent)(new AgentSpec({})).sandbox).toBe(sandbox)
+  })
+
+  it("propagates the parent's trace attributes", () => {
+    const parent = new Agent({ model, printer: false, traceAttributes: { team: 'infra' } })
+    const child = _defaultBuilder(parent)(new AgentSpec({}))
+    expect(internals(child)._tracer._traceAttributes).toEqual({ team: 'infra' })
+  })
+
+  it.each([true, false])("propagates the parent's printer setting (%s)", (printer) => {
+    const parent = new Agent({ model, printer })
+    const child = _defaultBuilder(parent)(new AgentSpec({}))
+    expect(internals(child)._printer !== undefined).toBe(printer)
   })
 })
