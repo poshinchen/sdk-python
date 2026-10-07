@@ -161,6 +161,7 @@ afterEach(async () => {
 async function createHarness(
   options: ScriptedServerOptions & {
     tasksConfig?: TasksConfig | false
+    elicitationCallback?: ConstructorParameters<typeof McpClient>[0]['elicitationCallback']
   } = {}
 ): Promise<TaskHarness> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -179,6 +180,7 @@ async function createHarness(
     applicationVersion: '1.2.3',
     transport: clientTransport,
     ...(tasksConfig !== undefined && { tasksConfig }),
+    ...(options.elicitationCallback && { elicitationCallback: options.elicitationCallback }),
   })
   const tool = new McpTool({
     name: 'task_tool',
@@ -438,5 +440,167 @@ describe('McpClient default overall task deadlines', () => {
     await vi.advanceTimersByTimeAsync(2)
     expect(settled).toHaveBeenCalledWith(expect.objectContaining({ code: SdkErrorCode.RequestTimeout }))
     await result
+  })
+})
+
+describe('McpClient SEP-2663 task execution', () => {
+  const TASK_METADATA = {
+    taskId: TASK_ID,
+    createdAt: CREATED_AT,
+    lastUpdatedAt: CREATED_AT,
+    ttlMs: 60_000,
+    pollIntervalMs: 10,
+  }
+
+  function createTask(status: 'working' | 'completed' = 'working'): Record<string, unknown> {
+    return { ...TASK_METADATA, resultType: 'task', status }
+  }
+
+  function detailedTask(overrides: Record<string, unknown>): Record<string, unknown> {
+    return { ...TASK_METADATA, resultType: 'complete', ...overrides }
+  }
+
+  function directResult(text: string): Record<string, unknown> {
+    return { resultType: 'complete', content: [{ type: 'text', text }] }
+  }
+
+  async function modernHarness(): Promise<TaskHarness> {
+    const harness = await createHarness({ era: 'modern' })
+    harness.server.handle('tools/list', () => ({
+      resultType: 'complete',
+      tools: [{ name: 'task_tool', inputSchema: { type: 'object' } }],
+    }))
+    return harness
+  }
+
+  it('returns a direct result unchanged without the wire discriminator', async () => {
+    const { client, server, tool } = await modernHarness()
+    server.handle('tools/call', () => directResult('direct answer'))
+    await expect(client.callTool(tool, { value: 1 })).resolves.toEqual({
+      content: [{ type: 'text', text: 'direct answer' }],
+    })
+  })
+
+  it('completes a task through polling and returns the final result', async () => {
+    const { client, server, tool } = await modernHarness()
+    let polls = 0
+    server.handle('tools/call', () => createTask('working'))
+    server.handle('tasks/get', () =>
+      ++polls < 2
+        ? detailedTask({ status: 'working' })
+        : detailedTask({ status: 'completed', result: directResult('task done') })
+    )
+    await expect(client.callTool(tool, {})).resolves.toEqual({
+      content: [{ type: 'text', text: 'task done' }],
+    })
+    expect(polls).toBeGreaterThanOrEqual(2)
+  })
+
+  it('throws McpTaskFailedError with the task error details', async () => {
+    const { client, server, tool } = await modernHarness()
+    server.handle('tools/call', () => createTask('working'))
+    server.handle('tasks/get', () =>
+      detailedTask({ status: 'failed', error: { code: -32_603, message: 'boom', data: { retryable: false } } })
+    )
+    const result = client.callTool(tool, {})
+    await expect(result).rejects.toBeInstanceOf(McpTaskFailedError)
+    await expect(result).rejects.toMatchObject({ code: -32_603, data: { retryable: false } })
+  })
+
+  it('throws McpTaskCancelledError with the server status message', async () => {
+    const { client, server, tool } = await modernHarness()
+    server.handle('tools/call', () => createTask('working'))
+    server.handle('tasks/get', () => detailedTask({ status: 'cancelled', statusMessage: 'operator stopped it' }))
+    await expect(client.callTool(tool, {})).rejects.toThrow('operator stopped it')
+  })
+
+  it('answers task input through the elicitation callback and completes', async () => {
+    const seenContexts: unknown[] = []
+    const harness = await createHarness({
+      era: 'modern',
+      elicitationCallback: async (context, params) => {
+        seenContexts.push({ context, params })
+        return { action: 'accept', content: { value: 'callback answer' } }
+      },
+    })
+    const { client, server, tool } = harness
+    server.handle('tools/list', () => ({
+      resultType: 'complete',
+      tools: [{ name: 'task_tool', inputSchema: { type: 'object' } }],
+    }))
+    let updated = false
+    server.handle('tools/call', () => createTask('working'))
+    server.handle('tasks/get', () =>
+      updated
+        ? detailedTask({ status: 'completed', result: directResult('after input') })
+        : detailedTask({
+            status: 'input_required',
+            inputRequests: {
+              approval: {
+                method: 'elicitation/create',
+                params: {
+                  mode: 'form',
+                  message: 'Approve?',
+                  requestedSchema: { type: 'object', properties: { value: { type: 'string' } } },
+                },
+              },
+            },
+          })
+    )
+    server.handle('tasks/update', (request) => {
+      updated = true
+      expect(requestParams(request).inputResponses).toMatchObject({
+        approval: { action: 'accept', content: { value: 'callback answer' } },
+      })
+      return { resultType: 'complete' }
+    })
+    await expect(client.callTool(tool, {})).resolves.toEqual({
+      content: [{ type: 'text', text: 'after input' }],
+    })
+    expect(seenContexts).toHaveLength(1)
+  })
+
+  it('returns a task handle from callToolWithTask without polling', async () => {
+    const { client, server, tool } = await modernHarness()
+    server.handle('tools/call', () => createTask('working'))
+    const handle = await client.callToolWithTask(tool, {})
+    expect(handle).toMatchObject({ resultType: 'task', taskId: TASK_ID, status: 'working' })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(server.requests('tasks/get')).toHaveLength(0)
+  })
+
+  it('strips the wire discriminator from a direct callToolWithTask result', async () => {
+    const { client, server, tool } = await modernHarness()
+    server.handle('tools/call', () => directResult('direct via submit'))
+    await expect(client.callToolWithTask(tool, {})).resolves.toEqual({
+      content: [{ type: 'text', text: 'direct via submit' }],
+    })
+  })
+
+  it('supports explicit lifecycle operations', async () => {
+    const { client, server } = await modernHarness()
+    await client.connect()
+    server.handle('tasks/get', () => detailedTask({ status: 'working' }))
+    server.handle('tasks/update', () => ({ resultType: 'complete' }))
+    server.handle('tasks/cancel', () => ({ resultType: 'complete' }))
+
+    await expect(client.getTask(TASK_ID)).resolves.toMatchObject({ taskId: TASK_ID, status: 'working' })
+    await expect(
+      client.updateTask(TASK_ID, { approval: { action: 'accept', content: { value: 'ok' } } })
+    ).resolves.toMatchObject({ resultType: 'complete' })
+    await expect(client.cancelTask(TASK_ID)).resolves.toMatchObject({ resultType: 'complete' })
+  })
+
+  it('rejects a tasks/get response for a different taskId', async () => {
+    const { client, server } = await modernHarness()
+    await client.connect()
+    server.handle('tasks/get', () => detailedTask({ status: 'working', taskId: 'other-task' }))
+    await expect(client.getTask(TASK_ID)).rejects.toThrow('different taskId')
+  })
+
+  it('requires the negotiated tasks extension for explicit lifecycle operations', async () => {
+    const { client } = await createHarness({ era: 'modern', capabilities: { tools: {} } })
+    await client.connect()
+    await expect(client.getTask(TASK_ID)).rejects.toThrow(TASKS_EXTENSION)
   })
 })
