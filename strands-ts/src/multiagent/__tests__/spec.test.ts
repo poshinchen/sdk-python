@@ -182,6 +182,10 @@ describe('Fixed', () => {
 describe('_defaultBuilder', () => {
   const model = new MockMessageModel()
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('inherits MCP clients once per server and respects server selection', async () => {
     const client = new McpClient({ applicationName: 'server', url: 'https://example.invalid/mcp' })
     const tools = ['read', 'search'].map((name) => new McpTool({ name, description: name, inputSchema: {}, client }))
@@ -196,7 +200,8 @@ describe('_defaultBuilder', () => {
 
       const inheritsServer = mcpServers === undefined || mcpServers.includes('server')
       expect(listTools).toHaveBeenCalledTimes(inheritsServer ? 1 : 0)
-      expect(child.toolRegistry.list()).toEqual(inheritsServer ? tools : [])
+      // Ignore tools the child's own context manager registers (e.g. retrieve_context).
+      expect(child.toolRegistry.list().filter((tool) => tool instanceof McpTool)).toEqual(inheritsServer ? tools : [])
     }
   })
 
@@ -220,10 +225,6 @@ describe('_defaultBuilder', () => {
     expect(childToolNames).toEqual(['read', 'shell'])
   })
 
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
   it('resolves only matching tools and warns about unknown tools and MCP servers', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const readTool = createMockTool('read', () => 'ok')
@@ -237,40 +238,31 @@ describe('_defaultBuilder', () => {
       .map((tool) => tool.name)
 
     expect(childToolNames).toEqual(['read'])
-    expect(warn).toHaveBeenCalledWith(
-      'tool_name=<nonexistent> | subagent requested tool but parent does not own it, skipping'
-    )
-    expect(warn).toHaveBeenCalledWith(
-      'server_name=<missing_server> | subagent requested MCP server but parent does not own it, skipping'
-    )
+    expect(warn.mock.calls).toEqual([
+      ['tool_name=<nonexistent> | subagent requested tool but parent does not own it, skipping'],
+      ['server_name=<missing_server> | subagent requested MCP server but parent does not own it, skipping'],
+    ])
   })
 
-  it('gives the child an auto context manager', () => {
-    const parent = new Agent({ model, printer: false })
-    expect(_defaultBuilder(parent)(new AgentSpec({})).contextManager).toBeDefined()
+  it.each([
+    ['gives the child an auto context manager for a stateless model', model, true],
+    ['skips the context manager for a stateful model', new StatefulMockModel(), false],
+  ])('%s', (_, parentModel, hasContextManager) => {
+    const parent = new Agent({ model: parentModel, printer: false })
+    expect(_defaultBuilder(parent)(new AgentSpec({})).contextManager !== undefined).toBe(hasContextManager)
   })
 
-  it('skips the context manager for a stateful model', () => {
-    const parent = new Agent({ model, printer: false })
-    const child = _defaultBuilder(parent)(new AgentSpec({ model: new StatefulMockModel() }))
-    expect(child.contextManager).toBeUndefined()
-  })
+  it.each([true, false])(
+    "propagates the parent's sandbox, trace attributes, and printer setting (printer=%s)",
+    (printer) => {
+      const sandbox = {} as unknown as Sandbox
+      const parent = new Agent({ model, printer, sandbox, traceAttributes: { team: 'infra' } })
 
-  it("propagates the parent's sandbox", () => {
-    const sandbox = {} as unknown as Sandbox
-    const parent = new Agent({ model, printer: false, sandbox })
-    expect(_defaultBuilder(parent)(new AgentSpec({})).sandbox).toBe(sandbox)
-  })
+      const child = _defaultBuilder(parent)(new AgentSpec({}))
 
-  it("propagates the parent's trace attributes", () => {
-    const parent = new Agent({ model, printer: false, traceAttributes: { team: 'infra' } })
-    const child = _defaultBuilder(parent)(new AgentSpec({}))
-    expect(internals(child)._tracer._traceAttributes).toEqual({ team: 'infra' })
-  })
-
-  it.each([true, false])("propagates the parent's printer setting (%s)", (printer) => {
-    const parent = new Agent({ model, printer })
-    const child = _defaultBuilder(parent)(new AgentSpec({}))
-    expect(internals(child)._printer !== undefined).toBe(printer)
-  })
+      expect(child.sandbox).toBe(sandbox)
+      expect(internals(child)._tracer._traceAttributes).toEqual({ team: 'infra' })
+      expect(internals(child)._printer !== undefined).toBe(printer)
+    }
+  )
 })

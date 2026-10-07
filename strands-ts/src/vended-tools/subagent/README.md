@@ -2,18 +2,9 @@
 
 Delegates a self-contained task to a child agent that runs in its own context and returns a final report.
 
-Use this when a subtask would otherwise flood the parent's context with intermediate work and only the conclusion matters. The model writes the task on each call; the child cannot ask follow-up questions, so the task must carry all the context it needs. Each call builds a fresh child, runs it to completion, and returns its final message as the tool result.
+Use this when a subtask would otherwise flood the parent's context with intermediate work and only the conclusion matters. Each call builds a fresh child, runs it to completion, and returns its final message. The child cannot ask follow-up questions, so the task must carry all the context it needs. Nested delegation is capped by `maxDepth` (default: 2).
 
-`makeSubagent` takes axis policies from `@strands-agents/sdk/multiagent` (`Fixed`, `Inherit`, `Open`, `Choice`) that control which parameters the model sees and which values it can supply for the child's `instructions`, `tools`, `mcpServers`, `model`, and `context`. Named roles are bundled into `Preset`s that the model selects via `agent_type`.
-
-## Features
-
-- **Fresh Context per Call**: Each delegation runs in a newly built child agent, so intermediate work never enters the parent's conversation
-- **Authority Modes**: Each axis is pinned, inherited, free-form, or limited to a developer-set set of options
-- **Presets**: Named roles the model picks via `agent_type`; defaults to a built-in `generalist`
-- **Context Sharing**: Optionally share the parent's conversation (`'all'` or text-only `'no_tools'`), bounded by `last_messages`
-- **Depth Limit**: Nested delegation is capped (default: 2 levels)
-- **Interrupt Propagation**: Child interrupts surface on the parent and resume the same child when answered
+`makeSubagent` takes axis policies from `@strands-agents/sdk/multiagent` (`Fixed`, `Inherit`, `Open`, `Choice`) that control which parameters the model sees and which values it can pick for the child's `instructions`, `tools`, `mcpServers`, `model`, and `context`. Named roles are bundled into `Preset`s that the model selects via `agent_type`.
 
 ## Usage
 
@@ -21,50 +12,27 @@ Use this when a subtask would otherwise flood the parent's context with intermed
 import { Agent } from '@strands-agents/sdk'
 import { subagent } from '@strands-agents/sdk/vended-tools/subagent'
 
-const agent = new Agent({ systemPrompt: 'You are a manager.', tools: [subagent] })
+const agent = new Agent({ tools: [subagent] })
 await agent.invoke('Research the latest TypeScript 5.x features and summarize them.')
 ```
 
-Presets, a model choice, shared context, and a tool subset:
+Presets, shared context, and a tool subset:
 
 ```typescript
-import { Agent } from '@strands-agents/sdk'
-import { Choice, Option, Preset } from '@strands-agents/sdk/multiagent'
+import { Choice, Preset } from '@strands-agents/sdk/multiagent'
 import { makeSubagent } from '@strands-agents/sdk/vended-tools/subagent'
 
 const subagent = makeSubagent({
   presets: {
-    researcher: new Preset({
-      instructions: 'You research topics thoroughly.',
-      description: 'deep research on a topic',
-    }),
     reviewer: new Preset({
       instructions: 'You review code for correctness and style.',
       description: 'code review',
     }),
   },
-  model: new Choice([
-    new Option('fast', 'us.anthropic.claude-sonnet-4-20250514-v1:0', 'quick tasks'),
-    new Option('deep', 'us.anthropic.claude-opus-4-20250514-v1:0', 'hard problems'),
-  ]),
   context: new Choice(['none', 'all', 'no_tools']),
-  tools: new Choice(['read', 'shell', 'write'], true),
-  maxDepth: 3,
+  tools: new Choice(['read', 'shell'], true),
 })
 const agent = new Agent({ tools: [subagent] })
-await agent.invoke('Review the changes in src/main.ts for correctness.')
-```
-
-Custom builder:
-
-```typescript
-import { Agent } from '@strands-agents/sdk'
-import type { AgentSpec } from '@strands-agents/sdk/multiagent'
-import { makeSubagent } from '@strands-agents/sdk/vended-tools/subagent'
-
-const subagent = makeSubagent({
-  builder: (spec: AgentSpec) => new Agent({ systemPrompt: spec.instructions ?? '', printer: false }),
-})
 ```
 
 ## API
@@ -92,17 +60,9 @@ Throws if `name` is empty, `maxDepth` is not a positive integer, or a `tools` / 
 
 The default builder gives each child the parent's model, tools, and MCP servers (narrowed by the resolved spec), sandbox, printer setting, and trace attributes, plus `contextManager: 'auto'` unless the child's model is stateful.
 
-### `GENERALIST`
-
-The built-in general-purpose `Preset` used when no `presets` are supplied.
-
-### `DEFAULT_SUBAGENT_DESCRIPTION` / `DEFAULT_SUBAGENT_MAX_DEPTH`
-
-The base tool description and the default `maxDepth`.
-
 ### Input
 
-Only `task` is always present; the other parameters appear depending on the configured policies.
+Only `task` is always present; the others appear depending on the configured policies.
 
 | Property        | Type       | Required | Description                                                                     |
 | --------------- | ---------- | -------- | ------------------------------------------------------------------------------- |
@@ -117,8 +77,6 @@ Only `task` is always present; the other parameters appear depending on the conf
 
 ### Output
 
-Returns the child's final response as text. Returns an error result (without building a child) when `task` is missing, `agent_type` is unknown, or the depth limit is reached; also when the child throws or is cancelled.
+Returns the child's final response as text. Returns an error result when `task` is missing, `agent_type` is unknown, the depth limit is reached, or the child throws or is cancelled.
 
-### Interrupts
-
-When the child stops on an interrupt, the interrupt is raised on the parent with its id namespaced as `subagent:<toolUseId>:<childInterruptId>` (with `toolUseId` URI-encoded). Resuming the parent with a response resumes the same child in process. The interrupted child is held in memory only, so it cannot be resumed after a process restart.
+If the child stops on an interrupt, it is raised on the parent with the id `subagent:<toolUseId>:<childInterruptId>` (`toolUseId` URI-encoded). Resuming the parent resumes the same child; the child is held in memory only, so it cannot be resumed after a process restart.

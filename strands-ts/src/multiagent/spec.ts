@@ -23,6 +23,8 @@ import type { Tool } from '../tools/tool.js'
 import { McpTool } from '../tools/mcp-tool.js'
 import { logger } from '../logging/logger.js'
 import type { Sandbox } from '../sandbox/base.js'
+import type { Printer } from '../agent/printer.js'
+import type { Tracer } from '../telemetry/tracer.js'
 import type { AttributeValue } from '@opentelemetry/api'
 
 /** Turns a resolved spec into a child agent, built the way the parent was. */
@@ -361,17 +363,6 @@ export function _resolveSpec(modelInput: Record<string, unknown>, axes: ResolveS
 }
 
 /**
- * Parent-agent internals the default builder propagates to children.
- *
- * @internal
- */
-interface ParentInternals {
-  _sandbox?: Sandbox | false
-  _printer?: unknown
-  _tracer?: { _traceAttributes?: Record<string, AttributeValue> }
-}
-
-/**
  * Creates a builder that produces child agents inheriting the parent's model, tools, and
  * MCP servers.
  *
@@ -429,10 +420,12 @@ export function _defaultBuilder(parent: Agent): AgentBuilder {
       }
     }
 
-    const internals = parent as unknown as ParentInternals
     const childModel = (spec.model as Model | ModelRouter | string | undefined) ?? parent.model
     const stateful = typeof childModel === 'object' && 'stateful' in childModel && childModel.stateful
-    const sandbox = internals._sandbox
+    const sandbox = (parent as unknown as { _sandbox?: Sandbox | false })._sandbox
+    const printer = (parent as unknown as { _printer?: Printer })._printer
+    const tracer = (parent as unknown as { _tracer: Tracer })._tracer
+    const traceAttributes = (tracer as unknown as { _traceAttributes: Record<string, AttributeValue> })._traceAttributes
     return new Agent({
       systemPrompt: spec.instructions ?? '',
       tools: childTools,
@@ -440,8 +433,8 @@ export function _defaultBuilder(parent: Agent): AgentBuilder {
       ...(spec.name !== undefined && { name: spec.name }),
       ...(!stateful && { contextManager: 'auto' }),
       ...(sandbox !== undefined && { sandbox }),
-      printer: internals._printer !== undefined,
-      traceAttributes: { ...internals._tracer?._traceAttributes },
+      printer: printer !== undefined,
+      traceAttributes: { ...traceAttributes },
     })
   }
 }
