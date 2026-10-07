@@ -250,8 +250,26 @@ const agent = new Agent({ tools: [taskTools] });
 await agent.invoke("Run the server's task tool.");
 ```
 
-`callTool()` returns the final tool result. For explicit SEP-2663 task control, use
-`callToolWithTask()`, then `getTask()`, `updateTask()`, and `cancelTask()`.
+`callTool()` returns the final tool result. For explicit SEP-2663 task control on a server
+that advertises the tasks extension, submit once with `callToolWithTask()` and manage the
+handle yourself:
+
+```typescript
+const [tool] = await taskTools.listTools();
+const submitted = await taskTools.callToolWithTask(tool!, { value: "input" });
+if (submitted.resultType === "task") {
+  let state = await taskTools.getTask(submitted.taskId);
+  if (state.status === "input_required") {
+    const [key] = Object.keys(state.inputRequests);
+    await taskTools.updateTask(submitted.taskId, {
+      [key!]: { action: "accept", content: { value: "approved" } },
+    });
+    state = await taskTools.getTask(submitted.taskId);
+  }
+  if (state.status === "working") await taskTools.cancelTask(submitted.taskId);
+}
+```
+
 To bound total wall-clock time, set `tasksConfig.pollTimeout`; a call's `options.timeoutMs`
 overrides that value. The field names and defaults match the Python SDK's `TasksConfig`
 (`ttl` remains as a deprecated alias of `requestTimeout`):
@@ -260,7 +278,7 @@ overrides that value. The field names and defaults match the Python SDK's `Tasks
 | --- | --- | --- |
 | `pollTimeout` | Entire automatic operation, including polling and input callbacks | 300,000 ms |
 | `requestTimeout` | Each task lifecycle request | 60,000 ms |
-| `pollInterval` | Polling delay when the server omits its interval | 1,000 ms |
+| `pollInterval` | Polling delay when a legacy (2025-11-25) server omits its interval; SEP-2663 servers supply the cadence | 1,000 ms |
 
 The first limit reached ends the wait. Matching progress resets the request timer
 only; the overall deadline never moves. For example, with `requestTimeout: 10_000`

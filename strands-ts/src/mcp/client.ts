@@ -35,6 +35,7 @@ import {
   CallToolResultV2Schema,
   CancelTaskResultV2Schema,
   CreateTaskResultV2Schema,
+  ElicitResultV2Schema,
   GetTaskResultV2Schema,
   isCreateTaskResultV2,
   InputResponsesV2Schema,
@@ -139,7 +140,7 @@ export interface TasksConfig {
   /** Timeout in milliseconds for each task lifecycle request; progress resets it. Defaults to 60000. */
   requestTimeout?: number
 
-  /** Polling delay in milliseconds when the server omits its polling interval. Defaults to 1000. */
+  /** Polling delay in milliseconds when a legacy (2025-11-25) server omits its interval; SEP-2663 servers supply the cadence. Defaults to 1000. */
   pollInterval?: number
 
   /**
@@ -289,7 +290,7 @@ export class McpClient {
   /** Default task lifecycle request timeout in milliseconds. */
   public static readonly DEFAULT_REQUEST_TIMEOUT = 60000
 
-  /** Default polling interval when a task response omits `pollIntervalMs`. */
+  /** Default polling interval when a legacy task response omits `pollInterval`. */
   public static readonly DEFAULT_POLL_INTERVAL_MS = 1000
 
   /**
@@ -325,6 +326,8 @@ export class McpClient {
   private _transport: McpTransport
   private _taskTransport: TaskTransport | undefined
   private _taskSession: TaskEnabledSession | undefined
+  /** Caller-supplied Streamable HTTP transports cannot carry the Mcp-Name task routing headers. */
+  private _taskRoutingUnavailable = false
   private _state: McpConnectionState
   private _client: TaskClient
   private _continueOnError: boolean
@@ -361,6 +364,7 @@ export class McpClient {
     }
 
     const transport = McpClient._resolveTransport(args)
+    this._taskRoutingUnavailable = args.transport instanceof StreamableHTTPClientTransport
     if (this._tasksConfig) {
       this._taskTransport = new TaskTransport(transport, () => this._client.outboundMetadata())
       this._transport = this._taskTransport
@@ -406,11 +410,6 @@ export class McpClient {
       if (args.auth || args.authProvider || args.headers) {
         throw new Error(
           'McpClientConfig: "auth", "authProvider", and "headers" require "url" (not compatible with "transport")'
-        )
-      }
-      if (args.tasksConfig !== undefined && args.transport instanceof StreamableHTTPClientTransport) {
-        throw new Error(
-          'McpClientConfig: SEP-2663 tasks require the "url" configuration for Streamable HTTP so Mcp-Name task routing headers can be applied'
         )
       }
       return args.transport
@@ -734,28 +733,20 @@ export class McpClient {
   ): Promise<McpCallToolWithTaskResult> {
     if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
     if (!this._tasksConfig) {
-      const outcome = await this._invokeTool(tool, args, {
-        ...(options?.signal && { signal: options.signal }),
-        ...(options?.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
-      })
-      return outcome.result as McpCallToolWithTaskResult
+      throw new Error('SEP-2663 task operations require McpClient tasksConfig')
     }
 
     const operation = this._createTaskOperation(options?.signal, options?.timeoutMs ?? this._tasksConfig.pollTimeoutMs)
     try {
       await this.connect(false, { signal: operation.signal })
       if (this._state === 'failed') throw new Error('MCP server failed to connect. Call connect(true) to retry.')
-      const requestTimeoutMs = options?.timeoutMs ?? this._tasksConfig.requestTimeoutMs
-      if (!this._supportsTaskExtension()) {
-        const outcome = await this._invokeTool(tool, args, { signal: operation.signal, timeoutMs: requestTimeoutMs })
-        return outcome.result as McpCallToolWithTaskResult
-      }
+      this._assertTaskLifecycleAvailable()
 
       const params = this._prepareToolCall(tool, args)
       const definition = this._serverToolDefinitions.get(params.name)
       const response = await this._taskTransport!.request('tools/call', params as Record<string, unknown>, {
         signal: operation.signal,
-        timeoutMs: remainingTime(operation.deadline, requestTimeoutMs),
+        timeoutMs: remainingTime(operation.deadline, this._tasksConfig.requestTimeoutMs),
         maxTotalTimeoutMs: remainingTime(operation.deadline, this._tasksConfig.pollTimeoutMs),
         resetTimeoutOnProgress: true,
         ...(!isBrowserRuntime() && { headers: buildMcpParamHeaders(definition?.inputSchema, params.arguments ?? {}) }),
@@ -917,7 +908,7 @@ export class McpClient {
   }
 
   private _supportsTaskExtension(): boolean {
-    if (!this._taskTransport || this._client.getProtocolEra() !== 'modern') return false
+    if (!this._taskTransport || this._taskRoutingUnavailable || this._client.getProtocolEra() !== 'modern') return false
     const extensions = this._client.getServerCapabilities()?.extensions
     return isRecord(extensions) && isRecord(extensions[TASKS_EXTENSION])
   }
@@ -946,6 +937,9 @@ export class McpClient {
       await validateToolOutput(params.name, outputSchema, result)
       return { result }
     } finally {
+      // An aborted lifecycle signal settles the execution locally, so close() alone would skip
+      // the cooperative cancel and leave the server-side task running until its TTL.
+      if (operation.signal.aborted) await execution.cancel().catch(() => undefined)
       await execution.close()
     }
   }
@@ -1013,11 +1007,19 @@ export class McpClient {
           }
           const inputId =
             context.taskId !== undefined ? `task:${context.taskId}:${context.inputId ?? ''}` : context.inputId
-          const response = await callback(
-            this._createTaskInputContext(inputId, context.signal),
-            request.params as Parameters<ElicitationCallback>[1]
-          )
-          return response as ApplicationElicitResult
+          const wireParams = request.params as Parameters<ElicitationCallback>[1] & { elicitationId?: string }
+          // Modern URL elicitation omits the legacy elicitationId; synthesize the task-scoped id so
+          // existing callbacks typed against ElicitRequestParams keep working.
+          const params =
+            wireParams.mode === 'url' && wireParams.elicitationId === undefined
+              ? { ...wireParams, elicitationId: inputId ?? 'task-input' }
+              : wireParams
+          const response = await callback(this._createTaskInputContext(inputId, context.signal), params)
+          const validated = ElicitResultV2Schema.safeParse(response)
+          if (!validated.success) {
+            throw new SdkError(SdkErrorCode.InvalidResult, 'MCP elicitation callback returned a malformed response')
+          }
+          return validated.data as ApplicationElicitResult
         },
         sampling: () => {
           throw new SdkError(
@@ -1092,6 +1094,11 @@ export class McpClient {
     }
     if (!this._supportsTaskExtension()) {
       throw new Error(`MCP server did not advertise the ${TASKS_EXTENSION} extension`)
+    }
+    if (this._taskRoutingUnavailable) {
+      throw new Error(
+        'SEP-2663 tasks over Streamable HTTP require the "url" configuration so Mcp-Name task routing headers can be applied'
+      )
     }
   }
 

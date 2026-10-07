@@ -464,6 +464,10 @@ function exposeDisposableStdioProbeShape(wrapper: TaskTransport, inner: Transpor
   })
 }
 
+// The MCP SDK's era negotiation duck-types its own stdio transport (constructor identity,
+// stderr/pid, _serverParams, prototype-owned _dispose) to run a disposable probe process. The
+// wrapper must present the same shape or stdio clients lose negotiation; there is no supported
+// hook for this, so these reflected members track the pinned SDK version.
 function isDisposableSdkStdioTransport(transport: Transport): boolean {
   if (!('stderr' in transport) || !('pid' in transport)) return false
 

@@ -1,9 +1,4 @@
-import type {
-  ElicitResult,
-  ElicitRequestFormParams,
-  ElicitRequestURLParams,
-  ClientContext,
-} from '@modelcontextprotocol/client'
+import type { ElicitResult, ElicitRequestParams, ClientContext } from '@modelcontextprotocol/client'
 
 /**
  * Context provided to an elicitation callback. The abort signal for the in-flight request is
@@ -25,9 +20,4 @@ export type ElicitationContext = ClientContext & {
  * @param params - The elicitation parameters from the server (message, requested schema or URL).
  * @returns The user's response: accept (with content), decline, or cancel.
  */
-export type ElicitationCallback = (
-  context: ElicitationContext,
-  params:
-    | ElicitRequestFormParams
-    | (Omit<ElicitRequestURLParams, 'elicitationId'> & Partial<Pick<ElicitRequestURLParams, 'elicitationId'>>)
-) => Promise<ElicitResult>
+export type ElicitationCallback = (context: ElicitationContext, params: ElicitRequestParams) => Promise<ElicitResult>

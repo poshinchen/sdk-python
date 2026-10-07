@@ -106,8 +106,6 @@ export interface McpTaskResult {
   resultType: 'task' | 'complete'
   /** Optional MCP result metadata. */
   _meta?: Record<string, unknown>
-  /** Additional fields defined by MCP result extensions. */
-  [key: string]: unknown
 }
 
 /** Direct tool result whose wire-only task discriminator has been removed. */
@@ -138,8 +136,6 @@ export interface McpCancelTaskResult extends McpTaskResult {
 export type McpTaskStatusNotificationParams = McpDetailedTask & {
   /** Optional MCP notification metadata. */
   _meta?: Record<string, unknown>
-  /** Additional fields defined by MCP notification extensions. */
-  [key: string]: unknown
 }
 
 /** Status update emitted by a server for a subscribed MCP task. */

@@ -564,7 +564,7 @@ describe('McpClient SEP-2663 task execution', () => {
     const { client, server, tool } = await modernHarness()
     server.handle('tools/call', () => createTask('working'))
     const handle = await client.callToolWithTask(tool, {})
-    expect(handle).toMatchObject({ resultType: 'task', taskId: TASK_ID, status: 'working' })
+    expect(handle).toEqual({ ...TASK_METADATA, resultType: 'task', status: 'working' })
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(server.requests('tasks/get')).toHaveLength(0)
   })
@@ -584,11 +584,79 @@ describe('McpClient SEP-2663 task execution', () => {
     server.handle('tasks/update', () => ({ resultType: 'complete' }))
     server.handle('tasks/cancel', () => ({ resultType: 'complete' }))
 
-    await expect(client.getTask(TASK_ID)).resolves.toMatchObject({ taskId: TASK_ID, status: 'working' })
+    await expect(client.getTask(TASK_ID)).resolves.toEqual(detailedTask({ status: 'working' }))
     await expect(
       client.updateTask(TASK_ID, { approval: { action: 'accept', content: { value: 'ok' } } })
-    ).resolves.toMatchObject({ resultType: 'complete' })
-    await expect(client.cancelTask(TASK_ID)).resolves.toMatchObject({ resultType: 'complete' })
+    ).resolves.toEqual({ resultType: 'complete' })
+    await expect(client.cancelTask(TASK_ID)).resolves.toEqual({ resultType: 'complete' })
+  })
+
+  it.each(['pollTimeout', 'abort'] as const)('sends tasks/cancel when the operation ends by %s', async (ending) => {
+    const { client, server, tool } = await modernHarness()
+    server.handle('tools/call', () => createTask('working'))
+    server.handle('tasks/get', () => detailedTask({ status: 'working' }))
+    server.handle('tasks/cancel', () => ({ resultType: 'complete' }))
+    const controller = new AbortController()
+    const promise = client.callTool(tool, {}, ending === 'abort' ? { signal: controller.signal } : { timeoutMs: 60 })
+    const rejected = expect(promise).rejects.toThrow()
+    if (ending === 'abort') {
+      await vi.waitFor(() => expect(server.requests('tools/call')).toHaveLength(1))
+      controller.abort(new Error('caller aborted'))
+    }
+    await rejected
+    await vi.waitFor(() => expect(server.requests('tasks/cancel')).toHaveLength(1))
+  })
+
+  it('fails fast when the elicitation callback returns a malformed response', async () => {
+    let calls = 0
+    const harness = await createHarness({
+      era: 'modern',
+      elicitationCallback: (async () => {
+        calls += 1
+        return { action: 'accept', content: 'not-an-object' }
+      }) as never,
+    })
+    const { client, server, tool } = harness
+    server.handle('tools/list', () => ({
+      resultType: 'complete',
+      tools: [{ name: 'task_tool', inputSchema: { type: 'object' } }],
+    }))
+    let cancelled = false
+    server.handle('tools/call', () => createTask('working'))
+    server.handle('tasks/get', () =>
+      cancelled
+        ? detailedTask({ status: 'cancelled', statusMessage: 'input was cancelled' })
+        : detailedTask({
+            status: 'input_required',
+            inputRequests: {
+              approval: {
+                method: 'elicitation/create',
+                params: {
+                  mode: 'form',
+                  message: 'Approve?',
+                  requestedSchema: { type: 'object', properties: { value: { type: 'string' } } },
+                },
+              },
+            },
+          })
+    )
+    server.handle('tasks/update', (request) => {
+      expect(requestParams(request).inputResponses).toEqual({ approval: { action: 'cancel' } })
+      cancelled = true
+      return { resultType: 'complete' }
+    })
+    await expect(client.callTool(tool, {})).rejects.toBeInstanceOf(McpTaskCancelledError)
+    expect(calls).toBe(1)
+  })
+
+  it('requires tasksConfig for callToolWithTask', async () => {
+    const { client, tool } = await createHarness({ era: 'modern', tasksConfig: false })
+    await expect(client.callToolWithTask(tool, {})).rejects.toThrow('require McpClient tasksConfig')
+  })
+
+  it('requires the negotiated tasks extension for callToolWithTask', async () => {
+    const { client, tool } = await createHarness({ era: 'modern', capabilities: { tools: {} } })
+    await expect(client.callToolWithTask(tool, {})).rejects.toThrow(TASKS_EXTENSION)
   })
 
   it('rejects a tasks/get response for a different taskId', async () => {
