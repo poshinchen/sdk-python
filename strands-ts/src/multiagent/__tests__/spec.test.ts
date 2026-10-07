@@ -17,6 +17,8 @@ import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
 import { logger } from '../../logging/logger.js'
 import type { Sandbox } from '../../sandbox/base.js'
+import { McpClient } from '../../mcp/client.js'
+import { McpTool } from '../../tools/mcp-tool.js'
 
 /** Mock model that advertises itself as stateful. */
 class StatefulMockModel extends MockMessageModel {
@@ -179,6 +181,24 @@ describe('Fixed', () => {
 
 describe('_defaultBuilder', () => {
   const model = new MockMessageModel()
+
+  it('inherits MCP clients once per server and respects server selection', async () => {
+    const client = new McpClient({ applicationName: 'server', url: 'https://example.invalid/mcp' })
+    const tools = ['read', 'search'].map((name) => new McpTool({ name, description: name, inputSchema: {}, client }))
+    const listTools = vi.spyOn(client, 'listTools').mockResolvedValue(tools)
+    const parent = new Agent({ model, tools, printer: false })
+    const builder = _defaultBuilder(parent)
+
+    for (const mcpServers of [undefined, ['server'], [], ['unknown']]) {
+      listTools.mockClear()
+      const child = builder(new AgentSpec(mcpServers === undefined ? {} : { mcpServers }))
+      await child.initialize()
+
+      const inheritsServer = mcpServers === undefined || mcpServers.includes('server')
+      expect(listTools).toHaveBeenCalledTimes(inheritsServer ? 1 : 0)
+      expect(child.toolRegistry.list()).toEqual(inheritsServer ? tools : [])
+    }
+  })
 
   it('builds a child Agent that inherits the parent model and forwards spec.name', () => {
     const parent = new Agent({ model, printer: false })
