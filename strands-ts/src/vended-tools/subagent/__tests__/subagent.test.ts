@@ -214,10 +214,11 @@ describe('subagent tool', () => {
       [{ maxDepth: 0 }, 'maxDepth must be a positive integer (>= 1).'],
       [{ maxDepth: -1 }, 'maxDepth must be a positive integer (>= 1).'],
       [{ maxDepth: 1.5 }, 'maxDepth must be a positive integer (>= 1).'],
-      [{ tools: new Choice([], true) }, /^tools=Choice\(\[\]\) offers no options/],
-      [{ tools: new Choice(['read', 'shell']) }, /^tools=Choice\(\.\.\.\) must be multiple/],
-      [{ mcpServers: new Choice([], true) }, /^mcpServers=Choice\(\[\]\) offers no options/],
-      [{ mcpServers: new Choice(['fs']) }, /^mcpServers=Choice\(\.\.\.\) must be multiple/],
+      [{ tools: new Choice([], true) }, /^tools: new Choice\(\[\]\) offers no options/],
+      [{ tools: new Choice(['read', 'shell']) }, /^tools: new Choice\(\.\.\.\) must set multiple to true/],
+      [{ mcpServers: new Choice([], true) }, /^mcpServers: new Choice\(\[\]\) offers no options/],
+      [{ mcpServers: new Choice(['fs']) }, /^mcpServers: new Choice\(\.\.\.\) must set multiple to true/],
+      [{ defaultPreset: 'reseacher' }, "defaultPreset 'reseacher' is not one of the presets: generalist."],
     ])('rejects invalid options %#', (options, message) => {
       expect(() => makeSubagent(options)).toThrow(message)
     })
@@ -471,14 +472,17 @@ describe('subagent tool', () => {
   describe('depth tracking', () => {
     it('refuses to delegate once the depth is exhausted', async () => {
       const { builder, specs } = capturingBuilder()
-      const tool = makeSubagent({ builder, maxDepth: 3 })
+      const tool = makeSubagent({ builder, maxDepth: 3, name: 'delegate' })
       const parent = parentAgent()
       parent.appState.set(DEPTH_STATE_KEY, 0)
 
       const { result } = await run(tool, { task: 'x' }, { agent: parent })
 
       expect(result.status).toBe('error')
-      expect(resultText(result)).toMatch(/Delegation depth limit reached \(3 levels\)/)
+      expect(resultText(result)).toBe(
+        'Delegation depth limit reached (3 levels); you cannot delegate further. ' +
+          'Complete this task yourself instead of calling delegate again.'
+      )
       expect(specs).toHaveLength(0)
     })
 
@@ -597,6 +601,54 @@ describe('subagent tool', () => {
       expect(result.stopReason).toBe('endTurn')
       expect(result.toString()).toBe('parent done')
       expect(confirmed).toBe(1)
+      expect(parent.messages[2]!.content).toEqual([
+        new ToolResultBlock({ toolUseId: 't1', status: 'success', content: [new TextBlock('child report')] }),
+      ])
+    })
+
+    it('resumes the same child across consecutive interrupts', async () => {
+      const seen: string[] = []
+      const confirmTool = createMockTool('confirmTool', (context) => {
+        const response = context.interrupt({ name: 'confirm', reason: 'Please confirm' })
+        seen.push(String(response))
+        return 'ok'
+      })
+      const model = new MockMessageModel()
+        .addTurn({ type: 'toolUseBlock', name: 'subagent', toolUseId: 't1', input: { task: 'confirm twice' } })
+        .addTurn({ type: 'toolUseBlock', name: 'confirmTool', toolUseId: 'inner-1', input: {} })
+        .addTurn({ type: 'toolUseBlock', name: 'confirmTool', toolUseId: 'inner-2', input: {} })
+        .addTurn({ type: 'textBlock', text: 'child report' })
+        .addTurn({ type: 'textBlock', text: 'parent done' })
+      const parent = new Agent({ model, tools: [subagent, confirmTool], printer: false })
+
+      const first = await parent.invoke('go')
+      expect(first.interrupts).toMatchObject([{ id: 'subagent:t1:tool:inner-1:confirm' }])
+
+      const second = await parent.invoke([
+        new InterruptResponseContent({ interruptId: 'subagent:t1:tool:inner-1:confirm', response: 'A' }),
+      ])
+      expect(second.interrupts).toMatchObject([{ id: 'subagent:t1:tool:inner-2:confirm' }])
+
+      const result = await parent.invoke([
+        new InterruptResponseContent({ interruptId: 'subagent:t1:tool:inner-2:confirm', response: 'B' }),
+      ])
+
+      expect(result.toString()).toBe('parent done')
+      expect(seen).toEqual(['A', 'B'])
+    })
+
+    it('delegates two levels deep from a parent with an auto context manager', async () => {
+      const model = new MockMessageModel()
+        .addTurn({ type: 'toolUseBlock', name: 'subagent', toolUseId: 't1', input: { task: 'delegate again' } })
+        .addTurn({ type: 'toolUseBlock', name: 'subagent', toolUseId: 't2', input: { task: 'do it' } })
+        .addTurn({ type: 'textBlock', text: 'grandchild report' })
+        .addTurn({ type: 'textBlock', text: 'child report' })
+        .addTurn({ type: 'textBlock', text: 'parent done' })
+      const parent = new Agent({ model, tools: [subagent], printer: false, contextManager: 'auto' })
+
+      const result = await parent.invoke('go')
+
+      expect(result.toString()).toBe('parent done')
       expect(parent.messages[2]!.content).toEqual([
         new ToolResultBlock({ toolUseId: 't1', status: 'success', content: [new TextBlock('child report')] }),
       ])

@@ -244,6 +244,20 @@ describe('_defaultBuilder', () => {
     ])
   })
 
+  it("does not inherit the parent's context manager tools", async () => {
+    const readTool = createMockTool('read', () => 'ok')
+    const parent = new Agent({ model, tools: [readTool], printer: false, contextManager: 'auto' })
+    await parent.initialize()
+
+    const child = _defaultBuilder(parent)(new AgentSpec({}))
+    await child.initialize()
+
+    const parentRetrieve = parent.toolRegistry.list().find((tool) => tool.name === 'retrieve_context')
+    expect(parentRetrieve).toBeDefined()
+    expect(child.toolRegistry.list().map((tool) => tool.name)).toEqual(['read', 'retrieve_context'])
+    expect(child.toolRegistry.list()).not.toContain(parentRetrieve)
+  })
+
   it.each([
     ['gives the child an auto context manager for a stateless model', model, true],
     ['skips the context manager for a stateful model', new StatefulMockModel(), false],

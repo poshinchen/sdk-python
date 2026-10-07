@@ -380,7 +380,12 @@ export function _defaultBuilder(parent: Agent): AgentBuilder {
   return (spec: AgentSpec): Agent => {
     const parentTools: Map<string, Tool> = new Map()
     const mcpClients: Map<string, McpClient> = new Map()
+    // The child's own context manager registers its tools (e.g. retrieve_context); skip the parent's.
+    const managedTools = new Set(parent.contextManager?.getTools() ?? [])
     for (const tool of parent.toolRegistry.list()) {
+      if (managedTools.has(tool)) {
+        continue
+      }
       if (tool instanceof McpTool) {
         // MCP tools flow through mcpServers to avoid duplicates with their client.
         const client = tool.mcpClient

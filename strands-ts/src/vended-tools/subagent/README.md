@@ -56,7 +56,7 @@ The default tool, produced by `makeSubagent()`: the `generalist` preset, free-fo
 | `maxDepth`      | `number`                     | `2`                          | Upper bound on nested delegation levels. Must be a positive integer.                   |
 | `name`          | `string`                     | `subagent`                   | Tool name.                                                                             |
 
-Throws if `name` is empty, `maxDepth` is not a positive integer, or a `tools` / `mcpServers` `Choice` has no options or is not `multiple`.
+Throws if `name` is empty, `maxDepth` is not a positive integer, `defaultPreset` is not one of `presets`, or a `tools` / `mcpServers` `Choice` has no options or is not `multiple`.
 
 The default builder gives each child the parent's model, tools, and MCP servers (narrowed by the resolved spec), sandbox, printer setting, and trace attributes, plus `contextManager: 'auto'` unless the child's model is stateful.
 

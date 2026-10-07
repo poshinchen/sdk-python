@@ -109,25 +109,32 @@ export function makeSubagent(options: MakeSubagentOptions = {}): Tool {
   const model = options.model ?? new Inherit()
   const context = options.context ?? new Fixed('none')
   const defaultPreset = options.defaultPreset ?? Object.keys(presets)[0]
+  if (defaultPreset !== undefined && !Object.hasOwn(presets, defaultPreset)) {
+    throw new Error(`defaultPreset '${defaultPreset}' is not one of the presets: ${Object.keys(presets).join(', ')}.`)
+  }
 
   // A tools Choice must be multiple.
   const tools = options.tools ?? new Inherit()
   if (tools instanceof Choice) {
     if (tools.options.length === 0) {
-      throw new Error('tools=Choice([]) offers no options; use Fixed([]) for a toolless child, or Inherit().')
+      throw new Error(
+        'tools: new Choice([]) offers no options; use new Fixed([]) for a toolless child, or new Inherit().'
+      )
     }
     if (!tools.multiple) {
-      throw new Error('tools=Choice(...) must be multiple=true; a subagent selects a subset of tools.')
+      throw new Error('tools: new Choice(...) must set multiple to true; a subagent selects a subset of tools.')
     }
   }
 
   const mcpServers = options.mcpServers ?? new Inherit()
   if (mcpServers instanceof Choice) {
     if (mcpServers.options.length === 0) {
-      throw new Error('mcpServers=Choice([]) offers no options; use Fixed([]) for no servers, or Inherit().')
+      throw new Error(
+        'mcpServers: new Choice([]) offers no options; use new Fixed([]) for no servers, or new Inherit().'
+      )
     }
     if (!mcpServers.multiple) {
-      throw new Error('mcpServers=Choice(...) must be multiple=true; a subagent selects a subset of servers.')
+      throw new Error('mcpServers: new Choice(...) must set multiple to true; a subagent selects a subset of servers.')
     }
   }
 
@@ -351,7 +358,7 @@ class SubagentTool extends Tool {
     if (depth <= 0) {
       return (
         `Delegation depth limit reached (${this._maxDepth} levels); you cannot delegate ` +
-        'further. Complete this task yourself instead of calling subagent again.'
+        `further. Complete this task yourself instead of calling ${this.name} again.`
       )
     }
     const task = raw['task']
@@ -397,10 +404,12 @@ class SubagentTool extends Tool {
     parentState: InterruptState,
     prefix: string
   ): { child: Agent; prompt: InvokeArgs } | string {
-    const own = Object.values(parentState.interrupts).filter((interrupt) => interrupt.id.startsWith(prefix))
-    const answered = own.filter((interrupt) => interrupt.response !== undefined)
+    // Only the responses supplied on this resume; earlier rounds' answers were already applied.
+    const answered = (parentState.resumeResponses ?? []).filter((r) =>
+      r.interruptResponse.interruptId.startsWith(prefix)
+    )
     if (answered.length === 0) {
-      throw new InterruptError(own)
+      throw new InterruptError(Object.values(parentState.interrupts).filter((i) => i.id.startsWith(prefix)))
     }
 
     const child = this._pending.get(toolUseId)
@@ -414,10 +423,10 @@ class SubagentTool extends Tool {
     }
 
     const prompt = answered.map(
-      (interrupt) =>
+      (r) =>
         new InterruptResponseContent({
-          interruptId: interrupt.id.slice(prefix.length),
-          response: interrupt.response!,
+          interruptId: r.interruptResponse.interruptId.slice(prefix.length),
+          response: r.interruptResponse.response,
         })
     )
     return { child, prompt }
