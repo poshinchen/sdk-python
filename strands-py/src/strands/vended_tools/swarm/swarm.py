@@ -247,6 +247,7 @@ def _resolve_specs(
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"Agent at index {index} must have a non-empty 'name' string")
         name = name.strip()
+        entry["name"] = name
         if name in seen_names:
             raise ValueError(f"Duplicate agent name {name!r} at index {index}")
         seen_names.add(name)
