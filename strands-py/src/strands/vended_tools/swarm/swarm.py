@@ -64,7 +64,8 @@ def make_swarm(
     """Create a swarm tool with developer-controlled safety limits and authority modes.
 
     Each agent spec from the model is resolved through the authority-mode system
-    (see :mod:`~strands.multiagent.spec`), then built via ``builder``.
+    (see :mod:`~strands.multiagent.spec`), then built via ``builder``. A running swarm
+    cannot be cancelled from the parent agent yet.
 
     Args:
         name: Tool name shown to the model.
@@ -189,7 +190,6 @@ def make_swarm(
         )
 
         logger.info("task=<%s>, agents=<%d> | starting swarm", task[:120], len(child_agents))
-        # The running swarm cannot be cancelled from the parent yet.
         result = await sdk_swarm.invoke_async(task)
 
         if result.status != Status.COMPLETED:
@@ -238,6 +238,7 @@ def _resolve_specs(
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"Agent at index {index} must have a non-empty 'name' string")
+        name = name.strip()
         if name in seen_names:
             raise ValueError(f"Duplicate agent name {name!r} at index {index}")
         seen_names.add(name)
@@ -286,6 +287,8 @@ def _build_agent_item_schema(
             "type": "string",
             "description": "System prompt for this agent.",
         }
+        if not presets:
+            required.append("instructions")
     elif isinstance(instructions, Choice):
         properties["instructions"] = instructions.to_schema_property("System prompt for this agent.")
 

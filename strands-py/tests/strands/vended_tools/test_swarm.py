@@ -121,12 +121,22 @@ def _patch(result=None):
 
 class TestBuildAgentItemSchema:
     def test_visible_and_hidden_axes(self):
-        # Open → visible; Fixed/Inherit → hidden.
+        # Open + no presets → instructions required.
         schema = _build_agent_item_schema(presets={}, instructions=Open(), tools=None, model=None)
-        assert schema["required"] == ["name"]
+        assert schema["required"] == ["name", "instructions"]
         assert schema["additionalProperties"] is False
         assert schema["properties"]["instructions"]["type"] == "string"
 
+        # Open + presets → instructions not required (preset provides a default).
+        with_presets = _build_agent_item_schema(
+            presets={"w": Preset(description="W")},
+            instructions=Open(),
+            tools=None,
+            model=None,
+        )
+        assert with_presets["required"] == ["name"]
+
+        # Fixed/Inherit → hidden.
         hidden = _build_agent_item_schema(presets={}, instructions=Fixed("x"), tools=Inherit(), model=Fixed("m"))
         assert set(hidden["properties"]) == {"name"}
 
@@ -213,7 +223,7 @@ class TestMakeSwarm:
         agents = swarm.tool_spec["inputSchema"]["json"]["properties"]["agents"]
         assert agents["minItems"] == 1 and agents["maxItems"] == DEFAULT_MAX_AGENTS
         item = agents["items"]
-        assert item["required"] == ["name"] and item["additionalProperties"] is False
+        assert item["required"] == ["name", "instructions"] and item["additionalProperties"] is False
         assert "instructions" in item["properties"]
 
         # Custom max_agents
