@@ -122,7 +122,9 @@ def _patch(result=None):
 class TestBuildAgentItemSchema:
     def test_visible_and_hidden_axes(self):
         # Open + no presets → instructions required.
-        schema = _build_agent_item_schema(presets={}, instructions=Open(), tools=None, model=None)
+        schema = _build_agent_item_schema(
+            presets={}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None
+        )
         assert schema["required"] == ["name", "instructions"]
         assert schema["additionalProperties"] is False
         assert schema["properties"]["instructions"]["type"] == "string"
@@ -132,12 +134,19 @@ class TestBuildAgentItemSchema:
             presets={"w": Preset(description="W")},
             instructions=Open(),
             tools=None,
+            mcp_servers=Inherit(),
             model=None,
         )
         assert with_presets["required"] == ["name"]
 
         # Fixed/Inherit → hidden.
-        hidden = _build_agent_item_schema(presets={}, instructions=Fixed("x"), tools=Inherit(), model=Fixed("m"))
+        hidden = _build_agent_item_schema(
+            presets={},
+            instructions=Fixed("x"),
+            tools=Inherit(),
+            mcp_servers=Inherit(),
+            model=Fixed("m"),
+        )
         assert set(hidden["properties"]) == {"name"}
 
     def test_choice_axes_and_presets(self):
@@ -146,10 +155,12 @@ class TestBuildAgentItemSchema:
             presets=presets,
             instructions=Choice(["A", "B"]),
             tools=Choice(["calc", "fetch"], multiple=True),
+            mcp_servers=Choice(["docs", "github"], multiple=True),
             model=Choice(["fast", "smart"]),
         )
         assert schema["properties"]["instructions"]["enum"] == ["A", "B"]
         assert schema["properties"]["tools"]["items"]["enum"] == ["calc", "fetch"]
+        assert schema["properties"]["mcp_servers"]["items"]["enum"] == ["docs", "github"]
         assert schema["properties"]["model"]["enum"] == ["fast", "smart"]
         assert sorted(schema["properties"]["agent_type"]["enum"]) == ["alpha", "beta"]
 
@@ -214,7 +225,19 @@ class TestMakeSwarm:
         assert isinstance(swarm, DecoratedFunctionTool) and swarm.tool_name == "swarm"
         assert make_swarm(name="team").tool_name == "team"
 
-    @pytest.mark.parametrize("kw", [{"max_agents": 0}, {"max_agents": True}, {"max_depth": 0}, {"max_depth": True}])
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            {"max_agents": 0},
+            {"max_agents": True},
+            {"max_depth": 0},
+            {"max_depth": True},
+            {"tools": Choice([], multiple=True)},
+            {"tools": Choice(["a"])},  # multiple=False on a list axis
+            {"mcp_servers": Choice([], multiple=True)},
+            {"mcp_servers": Choice(["a"])},  # multiple=False on a list axis
+        ],
+    )
     def test_rejects_invalid_limits(self, kw):
         with pytest.raises(ValueError):
             make_swarm(**kw)
@@ -236,6 +259,15 @@ class TestMakeSwarm:
         # Fixed instructions hidden
         fi = make_swarm(instructions=Fixed("x")).tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
         assert "instructions" not in fi["properties"]
+
+        # Choice mcp_servers visible
+        ms = make_swarm(mcp_servers=Choice(["docs", "gh"], multiple=True))
+        msi = ms.tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
+        assert msi["properties"]["mcp_servers"]["items"]["enum"] == ["docs", "gh"]
+
+        # Fixed mcp_servers hidden
+        msf = make_swarm(mcp_servers=Fixed([])).tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
+        assert "mcp_servers" not in msf["properties"]
 
     def test_presets_in_schema_and_description(self):
         t = make_swarm(presets={"writer": Preset(description="Writes."), "coder": Preset(description="Codes.")})

@@ -108,9 +108,19 @@ def make_swarm(
     if default_preset is None and presets:
         default_preset = next(iter(presets))
 
-    # Swarm children inherit the parent's MCP servers by default.
-    if mcp_servers is None:
-        mcp_servers = Inherit()
+    if isinstance(mcp_servers, Choice):
+        if not mcp_servers.options:
+            raise ValueError("mcp_servers=Choice([]) offers no options; use Fixed([]) for no servers, or Inherit().")
+        if not mcp_servers.multiple:
+            raise ValueError(
+                "mcp_servers=Choice(...) must be multiple=True; a swarm child selects a subset of servers."
+            )
+
+    if isinstance(tools, Choice):
+        if not tools.options:
+            raise ValueError("tools=Choice([]) offers no options; use Fixed([]) for a toolless child, or Inherit().")
+        if not tools.multiple:
+            raise ValueError("tools=Choice(...) must be multiple=True; a swarm child selects a subset of tools.")
 
     # Build the model-facing description with preset info.
     tool_description = _build_description(description, presets)
@@ -120,6 +130,7 @@ def make_swarm(
         presets=presets,
         instructions=instructions,
         tools=tools,
+        mcp_servers=mcp_servers,
         model=model,
     )
     input_schema = {
@@ -223,7 +234,7 @@ def _resolve_specs(
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None,
-    mcp_servers: Choice | Fixed | Inherit,
+    mcp_servers: Choice | Fixed | Inherit | None,
     model: Inherit | Choice | Fixed,
 ) -> list[AgentSpec]:
     """Validate raw agent dicts from the model and resolve them to specs.
@@ -271,6 +282,7 @@ def _build_agent_item_schema(
     presets: Mapping[str, Preset],
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None,
+    mcp_servers: Choice | Fixed | Inherit | None,
     model: Inherit | Choice | Fixed | None,
 ) -> dict[str, Any]:
     """Build the JSON Schema for a single agent dict inside the ``agents`` array.
@@ -303,6 +315,9 @@ def _build_agent_item_schema(
 
     if isinstance(tools, Choice):
         properties["tools"] = tools.to_schema_property("Tools this agent may use.")
+
+    if isinstance(mcp_servers, Choice):
+        properties["mcp_servers"] = mcp_servers.to_schema_property("MCP servers this agent may use.")
 
     if isinstance(model, Choice):
         properties["model"] = model.to_schema_property("Model for this agent.")

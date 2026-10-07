@@ -832,6 +832,7 @@ swarm = make_swarm(
     default_preset="researcher",
     instructions=Choice(["You are a researcher.", "You are a writer.", "You are an editor."]),
     tools=Inherit(),
+    mcp_servers=Inherit(),
     model=Fixed("us.amazon.nova-pro-v1:0"),
     max_agents=5,
     max_handoffs=10,
