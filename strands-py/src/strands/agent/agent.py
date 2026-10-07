@@ -210,8 +210,8 @@ class Agent(AgentBase, LocalAgent):
         record_direct_tool_call: bool = True,
         load_tools_from_directory: bool = False,
         trace_attributes: Mapping[str, AttributeValue] | None = None,
-        baggage_attributes: Mapping[str, str] | None = None,
         *,
+        baggage_attributes: Mapping[str, str] | None = None,
         aux_model: Model | str | None = None,
         agent_id: str | None = None,
         name: str | None = None,
@@ -279,7 +279,7 @@ class Agent(AgentBase, LocalAgent):
             load_tools_from_directory: Whether to load and automatically reload tools in the `./tools/` directory.
                 Defaults to False.
             trace_attributes: Custom trace attributes to apply to the agent's trace span.
-            baggage_attributes: Optional OTel baggage attributes for the duration of each agent invocation.
+            baggage_attributes: Optional key-value pairs to attach as OTel baggage context for each agent invocation.
             agent_id: Optional ID for the agent, useful for session management and multi-agent scenarios.
                 Defaults to "default".
             name: name of the Agent
