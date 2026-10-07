@@ -170,6 +170,24 @@ class StrandsTelemetry:
             logger.exception("error=<%s> | Failed to configure OTLP exporter", e)
         return self
 
+    def setup_baggage_processor(self) -> "StrandsTelemetry":
+        """Set up a baggage span processor for the tracer provider.
+
+        Returns:
+            self: Enables method chaining.
+
+        This method registers a BaggageSpanProcessor that stamps every OTel
+        baggage entry onto spans as attributes when they start.
+        """
+        from opentelemetry.processor.baggage import ALLOW_ALL_BAGGAGE_KEYS, BaggageSpanProcessor
+
+        try:
+            logger.info("Enabling baggage span processor")
+            self.tracer_provider.add_span_processor(BaggageSpanProcessor(ALLOW_ALL_BAGGAGE_KEYS))
+        except Exception as e:
+            logger.exception("error=<%s> | Failed to configure baggage span processor", e)
+        return self
+
     def setup_meter(
         self, enable_console_exporter: bool = False, enable_otlp_exporter: bool = False
     ) -> "StrandsTelemetry":
