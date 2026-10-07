@@ -28,7 +28,11 @@ from ...multiagent.spec import (
 from ...multiagent.swarm import Swarm
 from ...tools.decorator import tool
 from ...types.tools import ToolContext
-from .types import DEFAULT_MAX_AGENTS, DEFAULT_MAX_DEPTH, DEFAULT_SWARM_DESCRIPTION
+from .types import (
+    DEFAULT_MAX_AGENTS,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_SWARM_DESCRIPTION,
+)
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
@@ -51,15 +55,16 @@ def make_swarm(
     default_preset: str | None = None,
     instructions: Open | Choice | Fixed | None = None,
     tools: Choice | Fixed | Inherit | None = None,
+    mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
     max_agents: int = DEFAULT_MAX_AGENTS,
     max_depth: int = DEFAULT_MAX_DEPTH,
-    max_handoffs: int = 20,
-    max_iterations: int = 20,
-    execution_timeout: float = 900.0,
-    node_timeout: float = 300.0,
-    repetitive_handoff_detection_window: int = 0,
-    repetitive_handoff_min_unique_agents: int = 0,
+    max_handoffs: int | None = None,
+    max_iterations: int | None = None,
+    execution_timeout: float | None = None,
+    node_timeout: float | None = None,
+    repetitive_handoff_detection_window: int | None = None,
+    repetitive_handoff_min_unique_agents: int | None = None,
 ) -> DecoratedFunctionTool:
     """Create a swarm tool with developer-controlled safety limits and authority modes.
 
@@ -77,6 +82,7 @@ def make_swarm(
         default_preset: Preset used when the model omits ``agent_type``.
         instructions: Authority mode for the instructions axis.
         tools: Authority mode for the tools axis.
+        mcp_servers: Authority mode for the MCP servers axis.
         model: Authority mode for the model axis.
         max_agents: Upper bound on agents per invocation.
         max_depth: Maximum nesting depth for recursive swarm calls (>= 1).
@@ -84,8 +90,7 @@ def make_swarm(
         max_iterations: Maximum total agent invocations.
         execution_timeout: Total timeout in seconds.
         node_timeout: Per-agent timeout in seconds.
-        repetitive_handoff_detection_window: Window size for repetition
-            detection (``0`` disables).
+        repetitive_handoff_detection_window: Window size for repetition detection.
         repetitive_handoff_min_unique_agents: Minimum unique agents in window.
 
     Returns:
@@ -103,8 +108,9 @@ def make_swarm(
     if default_preset is None and presets:
         default_preset = next(iter(presets))
 
-    # Swarm children inherit the parent's MCP servers.
-    mcp_servers: Inherit = Inherit()
+    # Swarm children inherit the parent's MCP servers by default.
+    if mcp_servers is None:
+        mcp_servers = Inherit()
 
     # Build the model-facing description with preset info.
     tool_description = _build_description(description, presets)
@@ -154,10 +160,7 @@ def make_swarm(
         stored = parent.state.get(_DEPTH_STATE_KEY) if parent else None
         depth = max_depth if stored is None else stored
         if depth <= 0:
-            raise RuntimeError(
-                f"Swarm nesting depth limit reached ({max_depth} levels); "
-                "complete this task without spawning another swarm."
-            )
+            raise RuntimeError("Swarm nesting depth limit reached; complete this task without spawning another swarm.")
 
         build = builder or _default_builder(parent)
 
@@ -179,15 +182,21 @@ def make_swarm(
                 child.tool_registry.registry.pop(tool_name, None)
             child_agents.append(child)
 
-        sdk_swarm = Swarm(
-            nodes=child_agents,
-            max_handoffs=max_handoffs,
-            max_iterations=max_iterations,
-            execution_timeout=execution_timeout,
-            node_timeout=node_timeout,
-            repetitive_handoff_detection_window=repetitive_handoff_detection_window,
-            repetitive_handoff_min_unique_agents=repetitive_handoff_min_unique_agents,
-        )
+        swarm_kwargs: dict[str, Any] = {"nodes": child_agents}
+        if max_handoffs is not None:
+            swarm_kwargs["max_handoffs"] = max_handoffs
+        if max_iterations is not None:
+            swarm_kwargs["max_iterations"] = max_iterations
+        if execution_timeout is not None:
+            swarm_kwargs["execution_timeout"] = execution_timeout
+        if node_timeout is not None:
+            swarm_kwargs["node_timeout"] = node_timeout
+        if repetitive_handoff_detection_window is not None:
+            swarm_kwargs["repetitive_handoff_detection_window"] = repetitive_handoff_detection_window
+        if repetitive_handoff_min_unique_agents is not None:
+            swarm_kwargs["repetitive_handoff_min_unique_agents"] = repetitive_handoff_min_unique_agents
+
+        sdk_swarm = Swarm(**swarm_kwargs)
 
         logger.info("task=<%s>, agents=<%d> | starting swarm", task[:120], len(child_agents))
         result = await sdk_swarm.invoke_async(task)
@@ -195,8 +204,7 @@ def make_swarm(
         if result.status != Status.COMPLETED:
             raise RuntimeError(
                 f"Swarm stopped before completing (status={result.status.value}, "
-                f"{result.execution_count} iterations; max_handoffs={max_handoffs}, "
-                f"max_iterations={max_iterations}). Partial output:\n{result}"
+                f"{result.execution_count} iterations). Partial output:\n{result}"
             )
 
         return str(result)
@@ -215,7 +223,7 @@ def _resolve_specs(
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None,
-    mcp_servers: Inherit,
+    mcp_servers: Choice | Fixed | Inherit,
     model: Inherit | Choice | Fixed,
 ) -> list[AgentSpec]:
     """Validate raw agent dicts from the model and resolve them to specs.
@@ -312,7 +320,7 @@ def _build_description(base: str, presets: Mapping[str, Preset]) -> str:
         return base
 
     roles = "\n".join(f"- {name}: {p.description or name}" for name, p in presets.items())
-    return f"{base}\n\nAvailable subagents (agent_type):\n{roles}"
+    return f"{base}\n\nAvailable roles (agent_type):\n{roles}"
 
 
 swarm = make_swarm()

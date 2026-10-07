@@ -252,9 +252,10 @@ class TestMakeSwarm:
 class TestSwarmToolExecution:
     @pytest.mark.asyncio
     async def test_success(self):
-        with _patch():
+        with _patch() as cls:
             result = await swarm(task="go", agents=[_spec("w", instructions="Write.")], tool_context=_ctx())
         assert result == "writer: Done!"
+        cls.return_value.invoke_async.assert_awaited_once_with("go")
 
     @pytest.mark.asyncio
     async def test_forwards_limits(self):
