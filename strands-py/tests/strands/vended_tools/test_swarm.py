@@ -7,7 +7,7 @@ Swarm class so no model calls are made.
 
 import importlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -18,15 +18,17 @@ from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset
 from strands.multiagent.swarm import SwarmResult
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.registry import ToolRegistry
+from strands.types._events import ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
 from strands.vended_tools.swarm import make_swarm, swarm
 from strands.vended_tools.swarm.swarm import (
+    _DEFAULT_MAX_AGENTS,
     _DEPTH_STATE_KEY,
+    DEFAULT_SWARM_DESCRIPTION,
     _build_agent_item_schema,
     _build_description,
     _resolve_specs,
 )
-from strands.vended_tools.swarm.types import DEFAULT_MAX_AGENTS
 
 _swarm_module = importlib.import_module("strands.vended_tools.swarm.swarm")
 
@@ -54,6 +56,12 @@ def _ctx(parent=None):
     return ToolContext(tool_use={"name": "swarm", "toolUseId": "id", "input": {}}, agent=parent, invocation_state={})
 
 
+async def _run(swarm_tool, **kwargs):
+    """Drain the tool's async generator; return (streamed events, final result)."""
+    yielded = [event async for event in swarm_tool(**kwargs)]
+    return yielded[:-1], yielded[-1]
+
+
 def _spec(name, **kw):
     return {"name": name, **kw}
 
@@ -71,7 +79,7 @@ def _result(*, status=Status.COMPLETED, text="Done!", node="writer"):
 
 def _kwargs():
     return dict(
-        max_agents=DEFAULT_MAX_AGENTS,
+        max_agents=_DEFAULT_MAX_AGENTS,
         presets={},
         default_preset=None,
         instructions=Open(),
@@ -81,10 +89,19 @@ def _kwargs():
     )
 
 
-def _patch(result=None):
-    """Patch Swarm and _default_builder so no model calls are made."""
+def _patch(result=None, events=()):
+    """Patch Swarm and _default_builder so no model calls are made.
+
+    The mocked ``Swarm.stream_async`` yields ``events`` then the final result event.
+    """
     if result is None:
         result = _result()
+
+    async def _stream(task, invocation_state=None):
+        for event in events:
+            yield event
+        yield {"type": "multiagent_result", "result": result}
+
     sp = patch.object(_swarm_module, "Swarm")
 
     def _builder(spec):
@@ -99,7 +116,7 @@ def _patch(result=None):
         def __enter__(self):
             self.cls = sp.__enter__()
             bp.__enter__()
-            self.cls.return_value.invoke_async = AsyncMock(return_value=result)
+            self.cls.return_value.stream_async = Mock(side_effect=_stream)
             return self.cls
 
         def __exit__(self, *a):
@@ -152,7 +169,15 @@ class TestBuildAgentItemSchema:
         assert schema["properties"]["tools"]["items"]["enum"] == ["calc", "fetch"]
         assert schema["properties"]["mcp_servers"]["items"]["enum"] == ["docs", "github"]
         assert schema["properties"]["model"]["enum"] == ["fast", "smart"]
-        assert sorted(schema["properties"]["agent_type"]["enum"]) == ["alpha", "beta"]
+        agent_type = schema["properties"]["agent_type"]
+        assert agent_type["enum"] == ["alpha", "beta"]
+        assert "- alpha: First" in agent_type["description"]
+
+    def test_presets_without_descriptions(self):
+        schema = _build_agent_item_schema(
+            presets={"w": Preset()}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None
+        )
+        assert schema["properties"]["agent_type"]["description"] == "Role to assign this agent."
 
 
 class TestBuildDescription:
@@ -199,9 +224,12 @@ class TestResolveSpecs:
 
 
 class TestMakeSwarm:
-    def test_default_instance(self):
+    def test_default_instance_and_exports(self):
         from strands.tools.decorator import DecoratedFunctionTool
+        from strands.vended_tools import make_swarm as ms
+        from strands.vended_tools import swarm as s
 
+        assert s is swarm and ms is make_swarm
         assert isinstance(swarm, DecoratedFunctionTool) and swarm.tool_name == "swarm"
         assert make_swarm(name="team").tool_name == "team"
 
@@ -222,140 +250,100 @@ class TestMakeSwarm:
         with pytest.raises(ValueError):
             make_swarm(**kw)
 
-    def test_schema_reflects_configuration(self):
+    def test_default_spec(self):
         agents = swarm.tool_spec["inputSchema"]["json"]["properties"]["agents"]
-        assert agents["minItems"] == 1 and agents["maxItems"] == DEFAULT_MAX_AGENTS
-        item = agents["items"]
-        assert item["required"] == ["name", "instructions"] and item["additionalProperties"] is False
-        assert "instructions" in item["properties"]
+        assert agents["minItems"] == 1 and agents["maxItems"] == _DEFAULT_MAX_AGENTS
+        assert "first agent receives the task" in agents["description"]
+        assert agents["items"] == _build_agent_item_schema(
+            presets={}, instructions=Open(), tools=None, mcp_servers=None, model=Inherit()
+        )
+        assert swarm.tool_spec["description"] == DEFAULT_SWARM_DESCRIPTION
 
-        # Custom max_agents
-        assert make_swarm(max_agents=3).tool_spec["inputSchema"]["json"]["properties"]["agents"]["maxItems"] == 3
-
-        # Choice instructions
-        ci = make_swarm(instructions=Choice(["A"])).tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
-        assert ci["properties"]["instructions"]["enum"] == ["A"]
-
-        # Fixed instructions hidden
-        fi = make_swarm(instructions=Fixed("x")).tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
-        assert "instructions" not in fi["properties"]
-
-        # Choice mcp_servers visible
-        ms = make_swarm(mcp_servers=Choice(["docs", "gh"], multiple=True))
-        msi = ms.tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
-        assert msi["properties"]["mcp_servers"]["items"]["enum"] == ["docs", "gh"]
-
-        # Fixed mcp_servers hidden
-        msf = make_swarm(mcp_servers=Fixed([])).tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
-        assert "mcp_servers" not in msf["properties"]
-
-    def test_presets_in_schema_and_description(self):
-        t = make_swarm(presets={"writer": Preset(description="Writes."), "coder": Preset(description="Codes.")})
-        item = t.tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
-        assert sorted(item["properties"]["agent_type"]["enum"]) == ["coder", "writer"]
-        assert "writer" in t.tool_spec["description"]
+    def test_spec_reflects_configuration(self):
+        """The factory wires its axes, presets, and max_agents into the schema and description."""
+        axes = dict(
+            presets={"writer": Preset(description="Writes.")},
+            instructions=Choice(["A"]),
+            tools=Choice(["calc"], multiple=True),
+            mcp_servers=Choice(["docs", "gh"], multiple=True),
+            model=Choice(["fast"]),
+        )
+        t = make_swarm(max_agents=3, **axes)
+        agents = t.tool_spec["inputSchema"]["json"]["properties"]["agents"]
+        assert agents["maxItems"] == 3
+        assert agents["items"] == _build_agent_item_schema(**axes)
+        assert t.tool_spec["description"] == _build_description(DEFAULT_SWARM_DESCRIPTION, axes["presets"])
 
 
 class TestSwarmToolExecution:
     @pytest.mark.asyncio
-    async def test_success(self):
-        with _patch() as cls:
-            result = await swarm(task="go", agents=[_spec("w", instructions="Write.")], tool_context=_ctx())
-        assert result == "writer: Done!"
-        cls.return_value.invoke_async.assert_awaited_once_with("go")
+    async def test_streams_events_and_returns_result(self):
+        """Through the decorator: swarm events surface as ToolStreamEvents, final text as the tool result."""
+        events = [{"type": "multiagent_node_start", "node_id": "a", "node_type": "agent"}]
+        tool_use = {
+            "toolUseId": "t1",
+            "name": "swarm",
+            "input": {"task": "go", "agents": [_spec("a", instructions="Do.")]},
+        }
+        invocation_state = {"agent": _mock_parent(), "user_key": "v"}
+        with _patch(events=events) as cls:
+            out = [e async for e in swarm.stream(tool_use, invocation_state)]
+        cls.return_value.stream_async.assert_called_once_with("go", invocation_state=invocation_state)
+        # The decorator also streams the final yield before wrapping it as the result.
+        streamed = [e["tool_stream_event"]["data"] for e in out if isinstance(e, ToolStreamEvent)]
+        assert streamed == [*events, "writer: Done!"]
+        assert isinstance(out[-1], ToolResultEvent)
+        assert out[-1].tool_result["status"] == "success"
+        assert out[-1].tool_result["content"] == [{"text": "writer: Done!"}]
 
     @pytest.mark.asyncio
     async def test_forwards_limits(self):
-        custom = make_swarm(max_handoffs=5, max_iterations=10, execution_timeout=60.0, node_timeout=30.0)
-        with _patch() as cls:
-            await custom(task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
-        kw = cls.call_args[1]
-        assert (kw["max_handoffs"], kw["max_iterations"], kw["execution_timeout"], kw["node_timeout"]) == (
-            5,
-            10,
-            60.0,
-            30.0,
+        limits = dict(
+            max_handoffs=5,
+            max_iterations=10,
+            execution_timeout=60.0,
+            node_timeout=30.0,
+            repetitive_handoff_detection_window=4,
+            repetitive_handoff_min_unique_agents=2,
         )
+        with _patch() as cls:
+            await _run(make_swarm(**limits), task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
+        assert {k: cls.call_args[1][k] for k in limits} == limits
 
     @pytest.mark.asyncio
-    async def test_input_validation_errors(self):
-        with pytest.raises(ValueError, match="must be a list"):
-            await swarm(task="t", agents="bad", tool_context=_ctx())  # type: ignore[arg-type]
-        with pytest.raises(ValueError, match="Duplicate"):
-            await swarm(task="t", agents=[_spec("a"), _spec("a")], tool_context=_ctx())
+    async def test_validates_agents_against_max_agents(self):
         with pytest.raises(ValueError, match="At most 2"):
-            await make_swarm(max_agents=2)(task="t", agents=[_spec("a"), _spec("b"), _spec("c")], tool_context=_ctx())
+            await _run(
+                make_swarm(max_agents=2), task="t", agents=[_spec("a"), _spec("b"), _spec("c")], tool_context=_ctx()
+            )
 
     @pytest.mark.asyncio
     async def test_failed_status_raises(self):
-        failed = _result(status=Status.FAILED, text="partial")
-        failed.execution_count = 20
-        with _patch(failed), pytest.raises(RuntimeError, match="status=failed"):
-            await make_swarm(max_handoffs=10, max_iterations=20)(
-                task="t",
-                agents=[_spec("a", instructions="Do.")],
-                tool_context=_ctx(),
-            )
+        with _patch(_result(status=Status.FAILED, text="partial")), pytest.raises(RuntimeError) as exc:
+            await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
+        assert "status=failed" in str(exc.value) and "partial" in str(exc.value)
 
     @pytest.mark.asyncio
-    async def test_builder_and_nodes(self):
-        built = []
-        sentinels = [Mock(name="a"), Mock(name="b")]
-        it = iter(sentinels)
-
-        def builder(spec):
-            built.append(spec)
-            return next(it)
-
-        custom = make_swarm(builder=builder, instructions=Fixed("Locked."))
+    async def test_missing_result_raises(self):
         with _patch() as cls:
-            await custom(task="t", agents=[_spec("a"), _spec("b")], tool_context=_ctx())
-        assert [s.name for s in built] == ["a", "b"]
-        assert all(s.instructions == "Locked." for s in built)
-        assert cls.call_args[1]["nodes"] == sentinels
+
+            async def _no_result(task, invocation_state=None):
+                yield {"type": "multiagent_node_start", "node_id": "a", "node_type": "agent"}
+
+            cls.return_value.stream_async = Mock(side_effect=_no_result)
+            with pytest.raises(RuntimeError, match="without producing a result"):
+                await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
 
 
-class TestDepthGuard:
+class TestChildren:
     @pytest.mark.asyncio
-    async def test_exhausted_raises(self):
-        parent = _mock_parent(state={_DEPTH_STATE_KEY: 0})
-        with pytest.raises(RuntimeError, match="depth limit reached"):
-            await swarm(task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx(parent))
-
-    @pytest.mark.asyncio
-    async def test_propagates_decremented_depth(self):
-        children = []
+    @pytest.mark.parametrize("stored_depth,expected_depth", [(None, 2), (2, 1)])
+    async def test_builds_children(self, stored_depth, expected_depth):
+        """Children are built from resolved specs, get decremented depth, and lose handoff_to_agent."""
+        specs, children = [], []
 
         def builder(spec):
-            child = Mock(name=spec.name)
-            child.state = AgentState()
-            child.tool_registry = ToolRegistry()
-            children.append(child)
-            return child
-
-        # First call (no stored depth) → uses max_depth.
-        custom = make_swarm(builder=builder, max_depth=3)
-        with _patch():
-            await custom(task="t", agents=[_spec("a", instructions="X")], tool_context=_ctx())
-        assert children[0].state.get(_DEPTH_STATE_KEY) == 2
-
-        # Stored depth on parent → uses that instead.
-        children.clear()
-        parent = _mock_parent(state={_DEPTH_STATE_KEY: 2})
-        with _patch():
-            await custom(
-                task="t", agents=[_spec("a", instructions="X"), _spec("b", instructions="Y")], tool_context=_ctx(parent)
-            )
-        assert children[0].state.get(_DEPTH_STATE_KEY) == 1
-        assert children[1].state.get(_DEPTH_STATE_KEY) == 1
-
-
-class TestToolExclusion:
-    @pytest.mark.asyncio
-    async def test_handoff_to_agent_excluded(self):
-        children = []
-
-        def builder(spec):
+            specs.append(spec)
             child = Mock(name=spec.name)
             child.state = AgentState()
             child.tool_registry = ToolRegistry()
@@ -363,14 +351,19 @@ class TestToolExclusion:
             children.append(child)
             return child
 
-        with _patch():
-            await make_swarm(builder=builder)(task="t", agents=[_spec("a", instructions="X")], tool_context=_ctx())
-        assert "handoff_to_agent" not in children[0].tool_registry.registry
+        state = {} if stored_depth is None else {_DEPTH_STATE_KEY: stored_depth}
+        custom = make_swarm(builder=builder, instructions=Fixed("Locked."), max_depth=3)
+        with _patch() as cls:
+            await _run(custom, task="t", agents=[_spec("a"), _spec("b")], tool_context=_ctx(_mock_parent(state=state)))
 
+        assert [(s.name, s.instructions) for s in specs] == [("a", "Locked."), ("b", "Locked.")]
+        assert cls.call_args[1]["nodes"] == children
+        for child in children:
+            assert child.state.get(_DEPTH_STATE_KEY) == expected_depth
+            assert "handoff_to_agent" not in child.tool_registry.registry
 
-class TestExports:
-    def test_importable(self):
-        from strands.vended_tools import make_swarm as ms
-        from strands.vended_tools import swarm as s
-
-        assert s is swarm and ms is make_swarm
+    @pytest.mark.asyncio
+    async def test_exhausted_depth_raises(self):
+        parent = _mock_parent(state={_DEPTH_STATE_KEY: 0})
+        with pytest.raises(RuntimeError, match="depth limit reached"):
+            await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx(parent))

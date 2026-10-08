@@ -10,7 +10,7 @@ runs the swarm, and maps the result.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ...multiagent.base import Status
@@ -25,25 +25,38 @@ from ...multiagent.spec import (
     _default_builder,
     _resolve_spec,
 )
-from ...multiagent.swarm import Swarm
+from ...multiagent.swarm import Swarm, SwarmResult
 from ...tools.decorator import tool
 from ...types.tools import ToolContext
-from .types import (
-    DEFAULT_MAX_AGENTS,
-    DEFAULT_MAX_DEPTH,
-    DEFAULT_SWARM_DESCRIPTION,
-)
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
 
 logger = logging.getLogger(__name__)
 
-# The SDK Swarm raises ValueError if a node already has handoff_to_agent.
-_EXCLUDED_TOOLS = frozenset({"handoff_to_agent"})
+DEFAULT_SWARM_DESCRIPTION = (
+    "Spin up a team of AI agents that solve a task together by handing off to one another. "
+    "Each agent has its own name, system prompt, and tools (drawn from your own) "
+    "Your handoff_to_agent tool is never passed on; the swarm gives every agent its "
+    "own handoff tool instead. The first agent in `agents` is the entry point: it receives the "
+    "task and starts the work. The run ends when an agent finishes without handing off. "
+    "Returns each participating agent's final output, prefixed with its name. If the team "
+    "does not complete (an agent fails, or a handoff, iteration, or time limit is hit), the "
+    "call fails with the partial output."
+)
+"""Description for the default swarm tool."""
+
+_DEFAULT_MAX_AGENTS = 20
+"""Upper bound on the number of agents a single swarm invocation may create."""
+
+_DEFAULT_MAX_DEPTH = 2
+"""Upper bound on the number of nested swarm levels."""
 
 _DEPTH_STATE_KEY = "strands.swarm_depth"
 """Agent-state key used to propagate remaining nesting depth to children."""
+
+# The SDK Swarm raises ValueError if a node already has handoff_to_agent.
+_EXCLUDED_TOOLS = frozenset({"handoff_to_agent"})
 
 
 def make_swarm(
@@ -57,8 +70,8 @@ def make_swarm(
     tools: Choice | Fixed | Inherit | None = None,
     mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
-    max_agents: int = DEFAULT_MAX_AGENTS,
-    max_depth: int = DEFAULT_MAX_DEPTH,
+    max_agents: int = _DEFAULT_MAX_AGENTS,
+    max_depth: int = _DEFAULT_MAX_DEPTH,
     max_handoffs: int | None = None,
     max_iterations: int | None = None,
     execution_timeout: float | None = None,
@@ -145,7 +158,7 @@ def make_swarm(
                 },
                 "agents": {
                     "type": "array",
-                    "description": "Agent specifications.",
+                    "description": "Agent specifications. The first agent receives the task and starts the swarm.",
                     "items": agent_item_schema,
                     "minItems": 1,
                     "maxItems": max_agents,
@@ -159,7 +172,7 @@ def make_swarm(
         task: str,
         agents: list[dict[str, Any]],
         tool_context: ToolContext,
-    ) -> str:
+    ) -> AsyncGenerator[Any, None]:
         """Spins up a team of agents that collaborate via handoffs to solve a task.
 
         Args:
@@ -211,15 +224,23 @@ def make_swarm(
         sdk_swarm = Swarm(**swarm_kwargs)
 
         logger.info("task=<%s>, agents=<%d> | starting swarm", task[:120], len(child_agents))
-        result = await sdk_swarm.invoke_async(task)
+        result: SwarmResult | None = None
+        async for event in sdk_swarm.stream_async(task, invocation_state=tool_context.invocation_state):
+            # Hold back the final result event: the decorator treats the last yield as the tool result.
+            if event.get("type") == "multiagent_result":
+                result = event["result"]
+            else:
+                yield event
 
+        if result is None:
+            raise RuntimeError("Swarm stream ended without producing a result")
         if result.status != Status.COMPLETED:
             raise RuntimeError(
                 f"Swarm stopped before completing (status={result.status.value}, "
                 f"{result.execution_count} iterations). Partial output:\n{result}"
             )
 
-        return str(result)
+        yield str(result)
 
     return swarm_tool
 
