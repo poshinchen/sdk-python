@@ -20,21 +20,6 @@ import type { Sandbox } from '../../sandbox/base.js'
 import { McpClient } from '../../mcp/client.js'
 import { McpTool } from '../../tools/mcp-tool.js'
 
-/** Mock model that advertises itself as stateful. */
-class StatefulMockModel extends MockMessageModel {
-  override get stateful(): boolean {
-    return true
-  }
-}
-
-/** Reads the private fields the default builder propagates. */
-function internals(agent: Agent): {
-  _printer?: unknown
-  _tracer: { _traceAttributes: Record<string, unknown> }
-} {
-  return agent as unknown as { _printer?: unknown; _tracer: { _traceAttributes: Record<string, unknown> } }
-}
-
 const AXES: ResolveSpecAxes = {
   presets: {},
   defaultPreset: undefined,
@@ -260,7 +245,11 @@ describe('_defaultBuilder', () => {
 
   it.each([
     ['gives the child an auto context manager for a stateless model', model, true],
-    ['skips the context manager for a stateful model', new StatefulMockModel(), false],
+    [
+      'skips the context manager for a stateful model',
+      Object.defineProperty(new MockMessageModel(), 'stateful', { value: true }),
+      false,
+    ],
   ])('%s', (_, parentModel, hasContextManager) => {
     const parent = new Agent({ model: parentModel, printer: false })
     expect(_defaultBuilder(parent)(new AgentSpec({})).contextManager !== undefined).toBe(hasContextManager)
@@ -275,8 +264,9 @@ describe('_defaultBuilder', () => {
       const child = _defaultBuilder(parent)(new AgentSpec({}))
 
       expect(child.sandbox).toBe(sandbox)
-      expect(internals(child)._tracer._traceAttributes).toEqual({ team: 'infra' })
-      expect(internals(child)._printer !== undefined).toBe(printer)
+      const internals = child as unknown as { _printer?: unknown; _tracer: { _traceAttributes: unknown } }
+      expect(internals._tracer._traceAttributes).toEqual({ team: 'infra' })
+      expect(internals._printer !== undefined).toBe(printer)
     }
   )
 })
