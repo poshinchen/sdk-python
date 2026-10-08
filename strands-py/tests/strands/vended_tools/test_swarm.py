@@ -11,8 +11,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from strands import Agent
 from strands.agent import AgentResult
 from strands.agent.state import AgentState
+from strands.experimental.tools import stop
 from strands.multiagent.base import NodeResult, Status
 from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset
 from strands.multiagent.swarm import SwarmResult
@@ -29,6 +31,7 @@ from strands.vended_tools.swarm.swarm import (
     _build_description,
     _resolve_specs,
 )
+from tests.fixtures.mocked_model_provider import MockedModelProvider
 
 _swarm_module = importlib.import_module("strands.vended_tools.swarm.swarm")
 
@@ -285,10 +288,12 @@ class TestSwarmToolExecution:
             "name": "swarm",
             "input": {"task": "go", "agents": [_spec("a", instructions="Do.")]},
         }
-        invocation_state = {"agent": _mock_parent(), "user_key": "v"}
+        parent = _mock_parent()
+        invocation_state = {"agent": parent, "user_key": "v", "request_state": {}}
         with _patch(events=events) as cls:
             out = [e async for e in swarm.stream(tool_use, invocation_state)]
-        cls.return_value.stream_async.assert_called_once_with("go", invocation_state=invocation_state)
+        # The parent's request_state is not forwarded to children.
+        cls.return_value.stream_async.assert_called_once_with("go", invocation_state={"agent": parent, "user_key": "v"})
         # The decorator also streams the final yield before wrapping it as the result.
         streamed = [e["tool_stream_event"]["data"] for e in out if isinstance(e, ToolStreamEvent)]
         assert streamed == [*events, "writer: Done!"]
@@ -333,6 +338,27 @@ class TestSwarmToolExecution:
             cls.return_value.stream_async = Mock(side_effect=_no_result)
             with pytest.raises(RuntimeError, match="without producing a result"):
                 await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
+
+
+class TestEndToEnd:
+    def test_child_stop_does_not_halt_parent(self):
+        def tool_use(name, tool_input, tool_use_id):
+            return {
+                "role": "assistant",
+                "content": [{"toolUse": {"toolUseId": tool_use_id, "name": name, "input": tool_input}}],
+            }
+
+        # Parent and child share the inherited model, so responses are consumed in call order.
+        model = MockedModelProvider(
+            [
+                tool_use("swarm", {"task": "go", "agents": [_spec("a", instructions="Do.")]}, "p1"),
+                tool_use("stop", {"message": "child done"}, "c1"),
+                {"role": "assistant", "content": [{"text": "parent final"}]},
+            ]
+        )
+        result = Agent(model=model, tools=[swarm, stop], callback_handler=None)("start")
+        assert result.stop_reason == "end_turn"
+        assert str(result).strip() == "parent final"
 
 
 class TestChildren:

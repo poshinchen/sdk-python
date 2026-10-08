@@ -36,9 +36,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SWARM_DESCRIPTION = (
     "Spin up a team of AI agents that solve a task together by handing off to one another. "
-    "Each agent has its own name, system prompt, and tools (drawn from your own) "
-    "Your handoff_to_agent tool is never passed on; the swarm gives every agent its "
-    "own handoff tool instead. The first agent in `agents` is the entry point: it receives the "
+    "Each agent has its own name, system prompt, and tools (drawn from your own). "
+    "Agents get their own handoff tool; your tools are otherwise passed through. "
+    "The first agent in `agents` is the entry point: it receives the "
     "task and starts the work. The run ends when an agent finishes without handing off. "
     "Returns each participating agent's final output, prefixed with its name. If the team "
     "does not complete (an agent fails, or a handoff, iteration, or time limit is hit), the "
@@ -225,7 +225,9 @@ def make_swarm(
 
         logger.info("task=<%s>, agents=<%d> | starting swarm", task[:120], len(child_agents))
         result: SwarmResult | None = None
-        async for event in sdk_swarm.stream_async(task, invocation_state=tool_context.invocation_state):
+        # Copy so child cycles can't mutate the parent's state; drop request_state so a child's stop can't halt it.
+        child_state = {k: v for k, v in tool_context.invocation_state.items() if k != "request_state"}
+        async for event in sdk_swarm.stream_async(task, invocation_state=child_state):
             # Hold back the final result event: the decorator treats the last yield as the tool result.
             if event.get("type") == "multiagent_result":
                 result = event["result"]
