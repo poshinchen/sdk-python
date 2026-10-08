@@ -204,6 +204,30 @@ def test_setup_baggage_processor(mock_resource, mock_tracer_provider):
     assert result is telemetry
 
 
+@pytest.mark.parametrize(
+    ("keys", "allowed", "rejected"),
+    [
+        (["session.id", "tenant.id"], ["session.id", "tenant.id"], ["internal.auth_token", "session"]),
+        ([], [], ["session.id"]),
+    ],
+    ids=["allowlist", "empty"],
+)
+def test_setup_baggage_processor_with_keys(mock_resource, mock_tracer_provider, keys, allowed, rejected):
+    """Test baggage span processor only allows the configured keys."""
+    with mock.patch("opentelemetry.processor.baggage.BaggageSpanProcessor") as mock_baggage_processor:
+        telemetry = StrandsTelemetry()
+        telemetry.tracer_provider = mock_tracer_provider.return_value
+        result = telemetry.setup_baggage_processor(keys=keys)
+
+    mock_baggage_processor.assert_called_once()
+    predicate = mock_baggage_processor.call_args.args[0]
+    assert predicate is not ALLOW_ALL_BAGGAGE_KEYS
+    assert all(predicate(key) for key in allowed)
+    assert not any(predicate(key) for key in rejected)
+    mock_tracer_provider.return_value.add_span_processor.assert_called_once_with(mock_baggage_processor.return_value)
+    assert result is telemetry
+
+
 def test_setup_baggage_processor_exception(mock_resource, mock_tracer_provider):
     """Test baggage span processor with exception."""
     with mock.patch(
