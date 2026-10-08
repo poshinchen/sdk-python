@@ -143,6 +143,15 @@ describe('subagent tool', () => {
       expect(makeSubagent({ name: 'delegate' }).toolSpec.name).toBe('delegate')
     })
 
+    it('uses a custom description with the presets appended', () => {
+      expect(makeSubagent({ description: 'Hand off research.' }).toolSpec.description).toBe(
+        `Hand off research.\n\nAvailable subagents (agent_type):\n- generalist: ${GENERALIST.description}`
+      )
+      expect(makeSubagent({ description: 'Hand off research.', presets: {} }).toolSpec.description).toBe(
+        'Hand off research.'
+      )
+    })
+
     it('derives parameters from Choice axes', () => {
       const tool = makeSubagent({
         presets: {},
@@ -211,6 +220,7 @@ describe('subagent tool', () => {
   describe('factory validation', () => {
     it.each([
       [{ name: '' }, 'name must be a non-empty string.'],
+      [{ description: '' }, 'description must be a non-empty string.'],
       [{ maxDepth: 0 }, 'maxDepth must be a positive integer (>= 1).'],
       [{ maxDepth: -1 }, 'maxDepth must be a positive integer (>= 1).'],
       [{ maxDepth: 1.5 }, 'maxDepth must be a positive integer (>= 1).'],

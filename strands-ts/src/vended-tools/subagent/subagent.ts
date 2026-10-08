@@ -73,6 +73,11 @@ export interface MakeSubagentOptions {
   maxDepth?: number
   /** Tool name exposed to the model. @defaultValue `'subagent'` */
   name?: string
+  /**
+   * Tool description shown to the model. The available presets are appended to it.
+   * @defaultValue {@link DEFAULT_SUBAGENT_DESCRIPTION}
+   */
+  description?: string
 }
 
 /**
@@ -83,7 +88,7 @@ export interface MakeSubagentOptions {
  *
  * @param options - Configuration options.
  * @returns A tool that delegates a task to a freshly built child agent.
- * @throws Error if `maxDepth` is not a positive integer, `name` is empty, or a `Choice` axis
+ * @throws Error if `maxDepth` is not a positive integer, `name` or `description` is empty, or a `Choice` axis
  * violates its constraints (no options, or not `multiple` for tools / MCP servers).
  *
  * @example
@@ -98,9 +103,13 @@ export interface MakeSubagentOptions {
 export function makeSubagent(options: MakeSubagentOptions = {}): Tool {
   const name = options.name ?? 'subagent'
   const maxDepth = options.maxDepth ?? DEFAULT_SUBAGENT_MAX_DEPTH
+  const description = options.description ?? DEFAULT_SUBAGENT_DESCRIPTION
 
   if (!name) {
     throw new Error('name must be a non-empty string.')
+  }
+  if (!description) {
+    throw new Error('description must be a non-empty string.')
   }
   if (!Number.isInteger(maxDepth) || maxDepth < 1) {
     throw new Error('maxDepth must be a positive integer (>= 1).')
@@ -150,7 +159,7 @@ export function makeSubagent(options: MakeSubagentOptions = {}): Tool {
 
   const toolSpec: ToolSpec = {
     name,
-    description: buildDescription(DEFAULT_SUBAGENT_DESCRIPTION, presets),
+    description: buildDescription(description, presets),
     inputSchema: buildSchema({ presets, defaultPreset, instructions, tools, mcpServers, model, context }),
   }
 
