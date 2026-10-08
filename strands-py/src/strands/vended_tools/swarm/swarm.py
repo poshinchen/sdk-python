@@ -70,7 +70,8 @@ def make_swarm(
 
     Each agent spec from the model is resolved through the authority-mode system
     (see :mod:`~strands.multiagent.spec`), then built via ``builder``. A running swarm
-    cannot be cancelled from the parent agent yet.
+    cannot be cancelled from the parent agent. If no swarm limits are configured, the
+    Swarm primitive's defaults are used.
 
     Args:
         name: Tool name shown to the model.

@@ -31,11 +31,6 @@ from strands.vended_tools.swarm.types import DEFAULT_MAX_AGENTS
 _swarm_module = importlib.import_module("strands.vended_tools.swarm.swarm")
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _mock_parent(tool_names: list[str] | None = None, state: dict | None = None) -> SimpleNamespace:
     registry = ToolRegistry()
     if tool_names:
@@ -114,11 +109,6 @@ def _patch(result=None):
     return _Ctx()
 
 
-# ---------------------------------------------------------------------------
-# Schema helpers
-# ---------------------------------------------------------------------------
-
-
 class TestBuildAgentItemSchema:
     def test_visible_and_hidden_axes(self):
         # Open + no presets → instructions required.
@@ -172,11 +162,6 @@ class TestBuildDescription:
         assert "w" in desc and "Writes." in desc
 
 
-# ---------------------------------------------------------------------------
-# _resolve_specs
-# ---------------------------------------------------------------------------
-
-
 class TestResolveSpecs:
     @pytest.mark.parametrize(
         "agents,match",
@@ -211,11 +196,6 @@ class TestResolveSpecs:
         kw = _kwargs()
         kw["tools"] = Choice(["calc", "fetch"], multiple=True)
         assert _resolve_specs([_spec("a", tools=["calc", "unknown"])], **kw)[0].tools == ["calc"]
-
-
-# ---------------------------------------------------------------------------
-# make_swarm factory & tool spec
-# ---------------------------------------------------------------------------
 
 
 class TestMakeSwarm:
@@ -274,11 +254,6 @@ class TestMakeSwarm:
         item = t.tool_spec["inputSchema"]["json"]["properties"]["agents"]["items"]
         assert sorted(item["properties"]["agent_type"]["enum"]) == ["coder", "writer"]
         assert "writer" in t.tool_spec["description"]
-
-
-# ---------------------------------------------------------------------------
-# Swarm tool execution
-# ---------------------------------------------------------------------------
 
 
 class TestSwarmToolExecution:
@@ -340,11 +315,6 @@ class TestSwarmToolExecution:
         assert cls.call_args[1]["nodes"] == sentinels
 
 
-# ---------------------------------------------------------------------------
-# Depth guard & tool exclusion
-# ---------------------------------------------------------------------------
-
-
 class TestDepthGuard:
     @pytest.mark.asyncio
     async def test_exhausted_raises(self):
@@ -396,11 +366,6 @@ class TestToolExclusion:
         with _patch():
             await make_swarm(builder=builder)(task="t", agents=[_spec("a", instructions="X")], tool_context=_ctx())
         assert "handoff_to_agent" not in children[0].tool_registry.registry
-
-
-# ---------------------------------------------------------------------------
-# Exports
-# ---------------------------------------------------------------------------
 
 
 class TestExports:

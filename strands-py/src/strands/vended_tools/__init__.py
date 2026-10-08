@@ -1,4 +1,4 @@
-"""Built-in tools for commands, files, HTTP, taking notes, and pausing.
+"""Built-in tools for commands, files, HTTP, taking notes, pausing, and multi-agent delegation.
 
 The :func:`make_shell` and :func:`make_file_editor` factories produce
 sandbox-routed tools that either bind to a
@@ -33,6 +33,10 @@ a custom tool name or description.
 The :func:`make_subagent` factory produces a ``subagent`` delegation tool that runs a
 self-contained task in an isolated child agent and returns a final report.
 Authority-mode axes let the developer pin what the model can configure on each child.
+
+The :data:`swarm` tool spins up a handoff-based team of sub-agents at runtime and runs
+it as a :class:`~strands.multiagent.Swarm`; use :func:`make_swarm` to supply presets,
+a custom tool name or description, or a cap on agents per call.
 
 Example Usage:
     ```python
