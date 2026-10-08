@@ -422,7 +422,7 @@ agent = Agent(
 </Tab>
 </Tabs>
 
-If you also want baggage recorded on spans, call `setup_baggage_processor()` on `StrandsTelemetry`. Pass `keys` to record only specific baggage entries.
+If you also want baggage recorded on spans, call `setup_baggage_processor()` on `StrandsTelemetry`. Pass a predicate (or a sequence of predicates) that takes a baggage key and returns `True` to record only matching entries.
 
 <Tabs>
 <Tab label="Python">
@@ -431,7 +431,7 @@ from strands.telemetry import StrandsTelemetry
 
 strands_telemetry = StrandsTelemetry()
 strands_telemetry.setup_otlp_exporter()
-strands_telemetry.setup_baggage_processor(keys=["tenant.id", "env"])
+strands_telemetry.setup_baggage_processor(lambda key: key in {"tenant.id", "env"})
 ```
 </Tab>
 </Tabs>
@@ -444,13 +444,13 @@ If your agent runs under the AWS Distro for OpenTelemetry (ADOT), note that ADOT
 from opentelemetry import trace
 from strands.telemetry import StrandsTelemetry
 
-StrandsTelemetry(tracer_provider=trace.get_tracer_provider()).setup_baggage_processor(keys=["tenant.id", "env"])
+StrandsTelemetry(tracer_provider=trace.get_tracer_provider()).setup_baggage_processor(lambda key: key in {"tenant.id", "env"})
 ```
 </Tab>
 </Tabs>
 
 :::caution
-Without `keys`, `setup_baggage_processor()` stamps *every* baggage entry onto every span, including values extracted from inbound `baggage` request headers. It requires the `strands-agents[otel]` extra.
+Without a predicate, `setup_baggage_processor()` stamps *every* baggage entry onto every span, including values extracted from inbound `baggage` request headers. It requires the `strands-agents[otel]` extra.
 :::
 
 ### Custom Spans

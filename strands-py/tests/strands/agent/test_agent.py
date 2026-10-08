@@ -3940,6 +3940,33 @@ async def test_baggage_attributes_isolation_across_concurrent_agents():
     assert seen_b["tenant.id"] == "globex", f"agent B saw tenant.id={seen_b['tenant.id']}, expected 'globex'"
 
 
+def test_baggage_attributes_stamped_on_agent_span():
+    """BaggageSpanProcessor sees baggage_attributes when the invoke_agent span starts."""
+    from opentelemetry.processor.baggage import ALLOW_ALL_BAGGAGE_KEYS, BaggageSpanProcessor
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(BaggageSpanProcessor(ALLOW_ALL_BAGGAGE_KEYS))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    tracer = Tracer()
+    tracer.tracer_provider = provider
+    tracer.tracer = provider.get_tracer(tracer.service_name)
+
+    with unittest.mock.patch("strands.agent.agent.get_tracer", return_value=tracer):
+        agent = Agent(
+            model=MockedModelProvider([{"role": "assistant", "content": [{"text": "hi"}]}]),
+            callback_handler=None,
+            baggage_attributes={"tenant.id": "acme"},
+        )
+        agent("test")
+
+    provider.force_flush()
+    agent_spans = [span for span in exporter.get_finished_spans() if span.name.startswith("invoke_agent")]
+    assert len(agent_spans) == 1
+    assert agent_spans[0].attributes["tenant.id"] == "acme"
+
+
 def test_baggage_attributes_nested_agent_override_and_restore():
     """Inner agent's baggage overrides outer's for its scope, then outer's is restored."""
     from opentelemetry import baggage as baggage_api
