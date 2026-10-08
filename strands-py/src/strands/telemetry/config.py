@@ -6,8 +6,9 @@ for OpenTelemetry components and other telemetry infrastructure shared across St
 
 import logging
 import os
+from collections.abc import Callable, Sequence
 from importlib.metadata import version
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import opentelemetry.metrics as metrics_api
 import opentelemetry.sdk.metrics as metrics_sdk
@@ -21,8 +22,8 @@ from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
-if TYPE_CHECKING:
-    from opentelemetry.processor.baggage.processor import BaggageKeyPredicates
+BaggageKeyPredicate = Callable[[str], bool]
+BaggageKeyPredicates = BaggageKeyPredicate | Sequence[BaggageKeyPredicate]
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +174,7 @@ class StrandsTelemetry:
             logger.exception("error=<%s> | Failed to configure OTLP exporter", e)
         return self
 
-    def setup_baggage_processor(
-        self, baggage_key_predicate: "BaggageKeyPredicates | None" = None
-    ) -> "StrandsTelemetry":
+    def setup_baggage_processor(self, baggage_key_predicate: BaggageKeyPredicates | None = None) -> "StrandsTelemetry":
         """Set up a baggage span processor for the tracer provider.
 
         Args:
