@@ -1,5 +1,6 @@
 import {
   InMemoryTransport,
+  StreamableHTTPClientTransport,
   ProtocolError,
   ProtocolErrorCode,
   SERVER_INFO_META_KEY,
@@ -9,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { McpClient, McpTaskCancelledError, McpTaskFailedError, type TasksConfig } from '../client.js'
 import { McpTool } from '../../tools/mcp-tool.js'
+import { logger } from '../../logging/index.js'
 
 import type {
   JSONRPCMessage,
@@ -560,19 +562,19 @@ describe('McpClient SEP-2663 task execution', () => {
     expect(seenContexts).toHaveLength(1)
   })
 
-  it('returns a task handle from callToolWithTask without polling', async () => {
+  it('returns a task handle from submitTool without polling', async () => {
     const { client, server, tool } = await modernHarness()
     server.handle('tools/call', () => createTask('working'))
-    const handle = await client.callToolWithTask(tool, {})
+    const handle = await client.submitTool(tool, {})
     expect(handle).toEqual({ ...TASK_METADATA, resultType: 'task', status: 'working' })
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(server.requests('tasks/get')).toHaveLength(0)
   })
 
-  it('strips the wire discriminator from a direct callToolWithTask result', async () => {
+  it('strips the wire discriminator from a direct submitTool result', async () => {
     const { client, server, tool } = await modernHarness()
     server.handle('tools/call', () => directResult('direct via submit'))
-    await expect(client.callToolWithTask(tool, {})).resolves.toEqual({
+    await expect(client.submitTool(tool, {})).resolves.toEqual({
       content: [{ type: 'text', text: 'direct via submit' }],
     })
   })
@@ -649,14 +651,14 @@ describe('McpClient SEP-2663 task execution', () => {
     expect(calls).toBe(1)
   })
 
-  it('requires tasksConfig for callToolWithTask', async () => {
+  it('requires tasksConfig for submitTool', async () => {
     const { client, tool } = await createHarness({ era: 'modern', tasksConfig: false })
-    await expect(client.callToolWithTask(tool, {})).rejects.toThrow('require McpClient tasksConfig')
+    await expect(client.submitTool(tool, {})).rejects.toThrow('require McpClient tasksConfig')
   })
 
-  it('requires the negotiated tasks extension for callToolWithTask', async () => {
+  it('requires the negotiated tasks extension for submitTool', async () => {
     const { client, tool } = await createHarness({ era: 'modern', capabilities: { tools: {} } })
-    await expect(client.callToolWithTask(tool, {})).rejects.toThrow(TASKS_EXTENSION)
+    await expect(client.submitTool(tool, {})).rejects.toThrow(TASKS_EXTENSION)
   })
 
   it('rejects a tasks/get response for a different taskId', async () => {
@@ -670,5 +672,61 @@ describe('McpClient SEP-2663 task execution', () => {
     const { client } = await createHarness({ era: 'modern', capabilities: { tools: {} } })
     await client.connect()
     await expect(client.getTask(TASK_ID)).rejects.toThrow(TASKS_EXTENSION)
+  })
+})
+
+describe('McpClient caller-supplied Streamable HTTP transport with tasks', () => {
+  class FakeStreamableTransport extends StreamableHTTPClientTransport {
+    private readonly _delegate: Transport
+
+    constructor(delegate: Transport) {
+      super(new URL('http://localhost:9'))
+      this._delegate = delegate
+    }
+
+    override async start(): Promise<void> {
+      this._delegate.onmessage = (message): void => this.onmessage?.(message)
+      this._delegate.onclose = (): void => this.onclose?.()
+      this._delegate.onerror = (error): void => this.onerror?.(error)
+      await this._delegate.start()
+    }
+
+    override async send(message: Parameters<Transport['send']>[0]): Promise<void> {
+      await this._delegate.send(message)
+    }
+
+    override async close(): Promise<void> {
+      await this._delegate.close()
+    }
+  }
+
+  async function routedHarness(): Promise<TaskHarness> {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    const server = new ScriptedServer(serverTransport, { era: 'modern' })
+    await serverTransport.start()
+    const client = new McpClient({
+      transport: new FakeStreamableTransport(clientTransport),
+      tasksConfig: { requestTimeout: 500, pollInterval: 10 },
+    })
+    const tool = new McpTool({ name: 'task_tool', description: 'Task tool', inputSchema: { type: 'object' }, client })
+    const harness = { client, server, tool }
+    activeHarnesses.push(harness)
+    return harness
+  }
+
+  it('reports the routing restriction instead of a missing extension', async () => {
+    const { client } = await routedHarness()
+    await client.connect()
+    await expect(client.getTask(TASK_ID)).rejects.toThrow('Mcp-Name task routing headers')
+  })
+
+  it('falls back to a plain call with one warning when the server advertises tasks', async () => {
+    const { client, server, tool } = await routedHarness()
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    server.handle('tools/call', () => ({ resultType: 'complete', content: [{ type: 'text', text: 'plain' }] }))
+    await expect(client.callTool(tool, {})).resolves.toEqual({ content: [{ type: 'text', text: 'plain' }] })
+    await expect(client.callTool(tool, {})).resolves.toEqual({ content: [{ type: 'text', text: 'plain' }] })
+    const routingWarnings = warnSpy.mock.calls.filter(([message]) => String(message).includes('routing headers'))
+    expect(routingWarnings).toHaveLength(1)
   })
 })

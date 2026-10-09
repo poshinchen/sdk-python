@@ -36,8 +36,6 @@ export type {
   McpTaskError,
   McpTaskResult,
   McpTaskStatus,
-  McpTaskStatusNotification,
-  McpTaskStatusNotificationParams,
   McpUpdateTaskResult,
   McpWorkingTask,
 } from './task-types.js'

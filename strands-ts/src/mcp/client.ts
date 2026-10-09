@@ -328,6 +328,7 @@ export class McpClient {
   private _taskSession: TaskEnabledSession | undefined
   /** Caller-supplied Streamable HTTP transports cannot carry the Mcp-Name task routing headers. */
   private _taskRoutingUnavailable = false
+  private _taskRoutingWarned = false
   private _state: McpConnectionState
   private _client: TaskClient
   private _continueOnError: boolean
@@ -726,7 +727,7 @@ export class McpClient {
    * @param options - Optional settings for the request.
    * @returns The direct tool result or task handle returned by the server.
    */
-  public async callToolWithTask(
+  public async submitTool(
     tool: McpTool,
     args: JSONValue,
     options?: McpCallToolOptions
@@ -863,7 +864,15 @@ export class McpClient {
     }
 
     if (operation && this._supportsTaskExtension()) {
-      return await this._invokeTaskTool(tool, params, operation, options.timeoutMs!)
+      if (!this._taskRoutingUnavailable) {
+        return await this._invokeTaskTool(tool, params, operation, options.timeoutMs!)
+      }
+      if (!this._taskRoutingWarned) {
+        this._taskRoutingWarned = true
+        logger.warn(
+          `client=<${this._clientName}> | server advertises SEP-2663 tasks but a caller-supplied Streamable HTTP transport cannot carry Mcp-Name routing headers, calling tools directly | use the url configuration for task execution`
+        )
+      }
     }
 
     return {
@@ -908,7 +917,7 @@ export class McpClient {
   }
 
   private _supportsTaskExtension(): boolean {
-    if (!this._taskTransport || this._taskRoutingUnavailable || this._client.getProtocolEra() !== 'modern') return false
+    if (!this._taskTransport || this._client.getProtocolEra() !== 'modern') return false
     const extensions = this._client.getServerCapabilities()?.extensions
     return isRecord(extensions) && isRecord(extensions[TASKS_EXTENSION])
   }
@@ -1092,13 +1101,13 @@ export class McpClient {
     if (!this._tasksConfig || !this._taskTransport) {
       throw new Error('SEP-2663 task operations require McpClient tasksConfig')
     }
-    if (!this._supportsTaskExtension()) {
-      throw new Error(`MCP server did not advertise the ${TASKS_EXTENSION} extension`)
-    }
     if (this._taskRoutingUnavailable) {
       throw new Error(
         'SEP-2663 tasks over Streamable HTTP require the "url" configuration so Mcp-Name task routing headers can be applied'
       )
+    }
+    if (!this._supportsTaskExtension()) {
+      throw new Error(`MCP server did not advertise the ${TASKS_EXTENSION} extension`)
     }
   }
 

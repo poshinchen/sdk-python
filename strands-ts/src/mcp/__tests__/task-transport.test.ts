@@ -204,38 +204,6 @@ describe('TaskTransport', () => {
       expect(baseHandler).not.toHaveBeenCalled()
     })
 
-    it('strips only the modern task capability from legacy initialize requests', async () => {
-      const { inner, transport } = await createTransport()
-      const initialize: JSONRPCRequest = {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          protocolVersion: '2025-11-25',
-          clientInfo: CLIENT_INFO,
-          capabilities: CLIENT_CAPABILITIES,
-        },
-      }
-
-      await transport.send(initialize)
-
-      expect((inner.sent[0]!.message as JSONRPCRequest).params).toEqual({
-        protocolVersion: '2025-11-25',
-        clientInfo: CLIENT_INFO,
-        capabilities: {
-          roots: { listChanged: true },
-          extensions: {
-            'example.com/other': { mode: 'preserved' },
-          },
-        },
-      })
-      expect(initialize.params).toEqual({
-        protocolVersion: '2025-11-25',
-        clientInfo: CLIENT_INFO,
-        capabilities: CLIENT_CAPABILITIES,
-      })
-    })
-
     it('uses the current SDK metadata when issuing task requests', async () => {
       const inner = new RecordingTransport()
       let capabilities = CLIENT_CAPABILITIES

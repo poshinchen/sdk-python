@@ -323,7 +323,7 @@
     "express": "^5.1.0",
     "openai": "^6.45.0",
     "turndown": "^7.2.4",
-    "zod": "^4.1.12"
+    "zod": "^4.5.4"
   },
   "peerDependenciesMeta": {
     "@a2a-js/sdk": {

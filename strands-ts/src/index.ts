@@ -433,8 +433,6 @@ export type {
   McpTaskError,
   McpTaskResult,
   McpTaskStatus,
-  McpTaskStatusNotification,
-  McpTaskStatusNotificationParams,
   McpUpdateTaskResult,
   McpWorkingTask,
 } from './mcp/index.js'

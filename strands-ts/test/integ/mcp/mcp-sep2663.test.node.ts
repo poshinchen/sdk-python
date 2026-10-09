@@ -57,7 +57,7 @@ describe('MCP SEP-2663 Integration Tests', () => {
       if (!cancellableTool) throw new Error('cancellable_task tool not found')
       const requestStart = serverInfo.requests.length
 
-      const task = await client.callToolWithTask(cancellableTool, { message: 'waiting' })
+      const task = await client.submitTool(cancellableTool, { message: 'waiting' })
       expect(task).toMatchObject({
         resultType: 'task',
         status: 'working',

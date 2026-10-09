@@ -6,7 +6,6 @@ import type {
   ElicitRequestFormParams,
   ElicitRequestURLParams,
   ElicitResult,
-  InputRequiredResult,
   ListRootsRequest,
   ListRootsResult,
 } from '@modelcontextprotocol/client'
@@ -51,13 +50,6 @@ export interface McpInputResponses {
   [key: string]: McpInputResponse
 }
 
-/** Modern input-required result before automatic fulfilment. @internal */
-export interface McpInputRequiredResult extends Pick<InputRequiredResult, 'resultType' | 'requestState' | '_meta'> {
-  /** Outstanding embedded requests in the negotiated modern protocol. */
-  inputRequests?: McpInputRequests
-}
-
-/** JSON-RPC error stored by a task whose underlying request failed. */
 export interface McpTaskError {
   code: number
   message: string
@@ -116,7 +108,7 @@ export type McpDirectCallToolResult = CallToolResult & {
 /** Task handle returned instead of an immediate tool result. */
 export type McpCreateTaskResult = McpTaskResult & McpTask & { resultType: 'task' }
 
-/** Direct result or task handle returned by `callToolWithTask`. */
+/** Direct result or task handle returned by `submitTool`. */
 export type McpCallToolWithTaskResult = McpDirectCallToolResult | McpCreateTaskResult
 
 /** Complete status-specific result returned by `tasks/get`. */
@@ -132,13 +124,13 @@ export interface McpCancelTaskResult extends McpTaskResult {
   resultType: 'complete'
 }
 
-/** Complete task state carried by a `notifications/tasks` notification. */
+/** Complete task state carried by a `notifications/tasks` notification. @internal */
 export type McpTaskStatusNotificationParams = McpDetailedTask & {
   /** Optional MCP notification metadata. */
   _meta?: Record<string, unknown>
 }
 
-/** Status update emitted by a server for a subscribed MCP task. */
+/** Status update emitted by a server for a subscribed MCP task. @internal */
 export interface McpTaskStatusNotification {
   jsonrpc: '2.0'
   method: 'notifications/tasks'

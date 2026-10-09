@@ -14,7 +14,6 @@ import type {
 import type { JSONSchema } from '../types/json.js'
 
 const TASK_REQUEST_ID_PREFIX = 'strands-task:'
-const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks'
 const TASK_METHODS = new Set(['tasks/get', 'tasks/update', 'tasks/cancel'])
 const MCP_PARAM_HEADER_PREFIX = 'Mcp-Param-'
 const X_MCP_HEADER_KEY = 'x-mcp-header'
@@ -63,7 +62,20 @@ interface TaskRequestOptions {
 }
 
 /**
- * Bridges the SEP-2663 extension around stable MCP v2's protocol-era registry.
+ * Transport wrapper that carries SEP-2663 task traffic the MCP SDK client refuses to send.
+ *
+ * The SDK v2 client excludes extension methods (`tasks/get`, `tasks/update`, `tasks/cancel`,
+ * and task-augmented `tools/call`) from its typed request surface, so `request()` here sends
+ * them as raw JSON-RPC with its own id correlation, inactivity and total timeouts,
+ * progress-based timeout resets, and cancellation. It also applies the HTTP routing headers
+ * the 2026-07-28 spec and the tasks extension require (`Mcp-Method`, `Mcp-Name`,
+ * `Mcp-Param-*` with Base64 sentinel encoding) and merges the client's per-request metadata
+ * envelope into `_meta` so the extension capability reaches the server. Every other message
+ * passes through to the wrapped transport untouched.
+ *
+ * `McpClient` wraps its transport in this class whenever `tasksConfig` is set and uses
+ * `request()` both directly (explicit lifecycle methods) and as the raw dispatch that
+ * `@modelcontextprotocol/ext-tasks` requires for 2026-07-28 servers.
  *
  * @internal
  */
@@ -111,7 +123,7 @@ export class TaskTransport implements Transport {
   }
 
   public async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
-    await this._inner.send(withoutLegacyTaskCapability(message), options)
+    await this._inner.send(message, options)
   }
 
   public async close(): Promise<void> {
@@ -416,31 +428,6 @@ function abortReason(signal: AbortSignal | undefined): Error {
   return new DOMException('The operation was aborted', 'AbortError')
 }
 
-function withoutLegacyTaskCapability(message: JSONRPCMessage): JSONRPCMessage {
-  if (!isJsonRpcRequest(message) || message.method !== 'initialize' || !isRecord(message.params)) return message
-
-  const capabilities = message.params.capabilities
-  if (!isRecord(capabilities) || !isRecord(capabilities.extensions)) return message
-  if (!(TASKS_EXTENSION in capabilities.extensions)) return message
-
-  const extensions = { ...capabilities.extensions }
-  delete extensions[TASKS_EXTENSION]
-  const nextCapabilities = { ...capabilities }
-  if (Object.keys(extensions).length === 0) {
-    delete nextCapabilities.extensions
-  } else {
-    nextCapabilities.extensions = extensions
-  }
-
-  return {
-    ...message,
-    params: {
-      ...message.params,
-      capabilities: nextCapabilities,
-    },
-  } as JSONRPCMessage
-}
-
 function exposeDisposableStdioProbeShape(wrapper: TaskTransport, inner: Transport): void {
   if (!isDisposableSdkStdioTransport(inner)) return
 
@@ -493,10 +480,6 @@ function encodeMcpHeaderValue(value: string): string {
   let binary = ''
   for (const byte of bytes) binary += String.fromCodePoint(byte)
   return `=?base64?${globalThis.btoa(binary)}?=`
-}
-
-function isJsonRpcRequest(message: JSONRPCMessage): message is JSONRPCRequest {
-  return 'method' in message && 'id' in message
 }
 
 function isJsonRpcResponse(message: JSONRPCMessage): message is JSONRPCResponse | JSONRPCErrorResponse {
