@@ -415,7 +415,7 @@ export type {
 
 export type { McpTaskRequestOptions } from './mcp/index.js'
 export type {
-  McpCallToolWithTaskResult,
+  McpSubmitToolResult,
   McpCancelTaskResult,
   McpCancelledTask,
   McpCompletedTask,

@@ -16,7 +16,7 @@ import type { ElicitationCallback, ElicitationContext } from '../types/elicitati
 import type { ApplicationElicitResult, TaskEnabledSession, TaskOutcome } from '@modelcontextprotocol/ext-tasks/client'
 import type { JsonValue } from '@modelcontextprotocol/ext-tasks/core'
 import type {
-  McpCallToolWithTaskResult,
+  McpSubmitToolResult,
   McpCancelTaskResult,
   McpGetTaskResult,
   McpInputResponses,
@@ -731,7 +731,7 @@ export class McpClient {
     tool: McpTool,
     args: JSONValue,
     options?: McpCallToolOptions
-  ): Promise<McpCallToolWithTaskResult> {
+  ): Promise<McpSubmitToolResult> {
     if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
     if (!this._tasksConfig) {
       throw new Error('SEP-2663 task operations require McpClient tasksConfig')
@@ -757,7 +757,7 @@ export class McpClient {
           response,
           (value) => CreateTaskResultV2Schema.parse(value),
           'tools/call'
-        ) as unknown as McpCallToolWithTaskResult
+        ) as unknown as McpSubmitToolResult
       }
       const direct = parseTaskResponse(
         response,
@@ -765,7 +765,7 @@ export class McpClient {
         'tools/call'
       ) as Record<string, unknown>
       delete direct.resultType
-      return direct as McpCallToolWithTaskResult
+      return direct as McpSubmitToolResult
     } catch (error) {
       throw operation.signal.aborted ? abortReason(operation.signal) : error
     } finally {

@@ -109,7 +109,7 @@ export type McpDirectCallToolResult = CallToolResult & {
 export type McpCreateTaskResult = McpTaskResult & McpTask & { resultType: 'task' }
 
 /** Direct result or task handle returned by `submitTool`. */
-export type McpCallToolWithTaskResult = McpDirectCallToolResult | McpCreateTaskResult
+export type McpSubmitToolResult = McpDirectCallToolResult | McpCreateTaskResult
 
 /** Complete status-specific result returned by `tasks/get`. */
 export type McpGetTaskResult = McpTaskResult & McpDetailedTask & { resultType: 'complete' }

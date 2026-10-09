@@ -18,7 +18,7 @@ export type { McpLoadServersOptions, McpServerConfig, SerializableMcpToolFilters
 
 export type { McpTaskRequestOptions } from './client.js'
 export type {
-  McpCallToolWithTaskResult,
+  McpSubmitToolResult,
   McpCancelTaskResult,
   McpCancelledTask,
   McpCompletedTask,
