@@ -50,7 +50,7 @@ import boto3
 from strands.bidi.models import BedrockNovaSonicModel
 
 model = BedrockNovaSonicModel(
-    model_id="amazon.nova-2-sonic-v1:0",
+    model_id="amazon.nova-2-5-sonic",
     boto_session=boto3.Session(profile_name="voice-agent", region_name="us-east-1"),
 )
 ```
@@ -68,7 +68,7 @@ from strands.bidi.agent import BidiAgent
 from strands.bidi.models import BedrockNovaSonicModel
 
 model = BedrockNovaSonicModel(
-    model_id="amazon.nova-2-sonic-v1:0",
+    model_id="amazon.nova-2-5-sonic",
     region="us-east-1",
     voice="tiffany",
     audio={"output": {"sample_rate": 24000}},
@@ -93,7 +93,7 @@ longer pauses before the model decides the user has finished speaking:
 from strands.bidi.models import BedrockNovaSonicModel
 
 model = BedrockNovaSonicModel(
-    model_id="amazon.nova-2-sonic-v1:0",
+    model_id="amazon.nova-2-5-sonic",
     params={"turnDetectionConfiguration": {"endpointingSensitivity": "LOW"}},
 )
 ```
@@ -114,7 +114,7 @@ messages to 50 KiB and retains up to 200 KiB of recent history. These limits app
 to the history sent when opening a connection.
 
 [nova-sonic]: https://docs.aws.amazon.com/nova/latest/nova2-userguide/using-conversational-speech.html
-[nova-regions]: https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-amazon-nova-2-sonic.html
+[nova-regions]: https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html
 [nova-voices]: https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-language-support.html
 [nova-input-events]: https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-input-events.html
 [nova-history]: https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-chat-history.html
