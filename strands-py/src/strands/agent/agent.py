@@ -1425,60 +1425,56 @@ class Agent(AgentBase, LocalAgent):
             for key, value in self.baggage_attributes.items():
                 baggage_ctx = baggage_api.set_baggage(key, value, context=baggage_ctx)
 
-            # Baggage must be current when the span starts so span processors see it.
-            token = context_api.attach(baggage_ctx)
+            # Baggage is current for span start (processors see it) and the whole invocation.
+            baggage_token = context_api.attach(baggage_ctx)
             try:
                 self.trace_span = self._start_agent_trace_span(messages)
-            finally:
-                context_api.detach(token)
-
-            # Span and baggage stay current together for the rest of the invocation.
-            token = context_api.attach(trace_api.set_span_in_context(self.trace_span, baggage_ctx))
-            try:
-                events = self._run_loop(
-                    messages, merged_state, structured_output_model, structured_output_prompt, limits
-                )
-
-                # The result is the last EventLoopStopEvent, not the last event overall:
-                # AgentStreamStage middleware may yield trailing events after the stop event.
-                stop_event: EventLoopStopEvent | None = None
-                try:
-                    async for event in events:
-                        event.prepare(invocation_state=merged_state)
-
-                        if isinstance(event, EventLoopStopEvent):
-                            stop_event = event
-
-                        if event.is_callback_event:
-                            as_dict = event.as_dict()
-                            callback_handler(**as_dict)
-                            yield as_dict
-
-                    if stop_event is None:
-                        raise RuntimeError(
-                            "Agent stream produced no result event. AgentStreamStage middleware must "
-                            "forward events from next() and must not drop the terminal stop event."
+                with trace_api.use_span(self.trace_span):
+                    try:
+                        events = self._run_loop(
+                            messages, merged_state, structured_output_model, structured_output_prompt, limits
                         )
 
-                    result = AgentResult(*stop_event["stop"])
-                    callback_handler(result=result)
-                    yield AgentResultEvent(result=result).as_dict()
+                        # The result is the last EventLoopStopEvent, not the last event overall:
+                        # AgentStreamStage middleware may yield trailing events after the stop event.
+                        stop_event: EventLoopStopEvent | None = None
+                        try:
+                            async for event in events:
+                                event.prepare(invocation_state=merged_state)
 
-                    self._end_agent_trace_span(response=result)
-                finally:
-                    await events.aclose()
+                                if isinstance(event, EventLoopStopEvent):
+                                    stop_event = event
 
-            except Exception as e:
-                self._end_agent_trace_span(error=e)
-                self._concurrency.complete(begin.registered_token, error=e)
-                raise
-            except BaseException as cancellation:
-                # Waiter settlement deferred to the finally block (aborted path) — propagating
-                # CancelledError into unrelated waiters would be incorrect.
-                self._end_agent_trace_span(cancellation=cancellation)
-                raise
+                                if event.is_callback_event:
+                                    as_dict = event.as_dict()
+                                    callback_handler(**as_dict)
+                                    yield as_dict
+
+                            if stop_event is None:
+                                raise RuntimeError(
+                                    "Agent stream produced no result event. AgentStreamStage middleware must "
+                                    "forward events from next() and must not drop the terminal stop event."
+                                )
+
+                            result = AgentResult(*stop_event["stop"])
+                            callback_handler(result=result)
+                            yield AgentResultEvent(result=result).as_dict()
+
+                            self._end_agent_trace_span(response=result)
+                        finally:
+                            await events.aclose()
+
+                    except Exception as e:
+                        self._end_agent_trace_span(error=e)
+                        self._concurrency.complete(begin.registered_token, error=e)
+                        raise
+                    except BaseException as cancellation:
+                        # Waiter settlement deferred to the finally block (aborted path) — propagating
+                        # CancelledError into unrelated waiters would be incorrect.
+                        self._end_agent_trace_span(cancellation=cancellation)
+                        raise
             finally:
-                context_api.detach(token)
+                context_api.detach(baggage_token)
 
         finally:
             if cancel_watcher is not None:
