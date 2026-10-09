@@ -21,7 +21,11 @@ const DEFAULT_TIMEOUT = 120
 
 const pythonReplInputSchema = z.object({
   code: z.string().describe('Python source to execute.'),
-  timeout: z.number().positive().optional().describe('Timeout in seconds (default: 120). Must be positive.'),
+  timeout: z
+    .number()
+    .positive({ error: (iss) => `timeout must be a positive number of seconds, got ${String(iss.input)}` })
+    .optional()
+    .describe('Timeout in seconds (default: 120). Must be positive.'),
 })
 
 /**

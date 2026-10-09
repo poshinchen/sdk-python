@@ -70,7 +70,9 @@ describe('python_repl shim', () => {
 
   it('rejects a non-positive timeout', async () => {
     const { sandbox, executeCode } = mockSandbox()
-    await expect(run({ code: 'pass', timeout: 0 }, toolContext(sandbox))).rejects.toThrow(/too_small/)
+    await expect(run({ code: 'pass', timeout: 0 }, toolContext(sandbox))).rejects.toThrow(
+      /timeout must be a positive number of seconds, got 0/
+    )
     expect(executeCode).not.toHaveBeenCalled()
   })
 
@@ -123,7 +125,7 @@ describe.skipIf(process.platform === 'win32')('python_repl local execution', () 
     expect(payload).toStrictEqual({ output: 'partial\n', error: '', exit_code: 124 })
   })
 
-  it('cancellation kills the interpreter and propagates unwrapped', async () => {
+  it('cancellation stops the call and propagates unwrapped', async () => {
     const controller = new AbortController()
     const pending = run({ code: 'import time; time.sleep(10)' }, toolContext(undefined, controller.signal))
     setTimeout(() => controller.abort(), 100)
