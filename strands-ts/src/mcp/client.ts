@@ -727,11 +727,7 @@ export class McpClient {
    * @param options - Optional settings for the request.
    * @returns The direct tool result or task handle returned by the server.
    */
-  public async submitTool(
-    tool: McpTool,
-    args: JSONValue,
-    options?: McpCallToolOptions
-  ): Promise<McpSubmitToolResult> {
+  public async submitTool(tool: McpTool, args: JSONValue, options?: McpCallToolOptions): Promise<McpSubmitToolResult> {
     if (options?.timeoutMs !== undefined) assertPositiveDuration(options.timeoutMs, 'MCP call timeout')
     if (!this._tasksConfig) {
       throw new Error('SEP-2663 task operations require McpClient tasksConfig')
