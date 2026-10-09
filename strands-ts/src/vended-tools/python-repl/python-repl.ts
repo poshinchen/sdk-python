@@ -13,7 +13,7 @@ import { z } from 'zod'
 import { tool } from '../../tools/tool-factory.js'
 import { Sandbox } from '../../sandbox/base.js'
 import { LANGUAGE_PATTERN } from '../../sandbox/constants.js'
-import { SandboxTimeoutError } from '../../sandbox/errors.js'
+import { SandboxAbortError, SandboxTimeoutError } from '../../sandbox/errors.js'
 import { PYTHON_REPL_DESCRIPTION, PythonReplError, type PythonReplOutput } from './types.js'
 
 const DEFAULT_LANGUAGE = 'python3'
@@ -64,8 +64,9 @@ function resolvePythonReplArgs(
  * `context.agent.sandbox` at call time.
  *
  * The tool throws {@link SandboxTimeoutError} when execution exceeds `timeout`, with the partial
- * output appended to the message as JSON using the success field names and `exit_code` 124, and
- * {@link PythonReplError} when the sandbox fails to run the code.
+ * output appended to the message as JSON using the success field names and `exit_code` 124,
+ * {@link PythonReplError} when the sandbox fails to run the code, and rethrows `SandboxAbortError`
+ * when the agent cancels the call.
  *
  * @param sandbox - Sandbox to bind at creation. When omitted, the agent's sandbox is used at call time.
  * @param options - Tool name, description, and interpreter.
@@ -101,9 +102,14 @@ export function makePythonRepl(
 
       const sandbox = boundSandbox ?? context.agent.sandbox
       try {
-        const result = await sandbox.executeCode(input.code, language, { timeout: input.timeout ?? DEFAULT_TIMEOUT })
+        const result = await sandbox.executeCode(input.code, language, {
+          timeout: input.timeout ?? DEFAULT_TIMEOUT,
+          signal: context.cancelSignal,
+        })
         return { output: result.stdout, error: result.stderr, exit_code: result.exitCode }
       } catch (err) {
+        // Let cancellation propagate as-is rather than reporting it as a sandbox failure.
+        if (err instanceof SandboxAbortError) throw err
         if (err instanceof SandboxTimeoutError) {
           // Thrown errors reach the model as `Error: <message>`, so the partial output rides in the message.
           const partial: PythonReplOutput = { output: err.stdout, error: err.stderr, exit_code: 124 }

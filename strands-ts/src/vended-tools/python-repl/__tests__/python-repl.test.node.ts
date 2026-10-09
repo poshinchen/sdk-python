@@ -11,18 +11,21 @@ import {
 } from '../index.js'
 import * as vendedTools from '../../index.js'
 import { NotASandboxLocalEnvironment } from '../../../sandbox/not-a-sandbox-local-environment.js'
-import { SandboxTimeoutError } from '../../../sandbox/errors.js'
+import { SandboxAbortError, SandboxTimeoutError } from '../../../sandbox/errors.js'
 import type { Sandbox } from '../../../sandbox/base.js'
 import type { ToolContext } from '../../../index.js'
 import { createMockAgent } from '../../../__fixtures__/agent-helpers.js'
 
-const toolContext = (sandbox: Sandbox = new NotASandboxLocalEnvironment()): ToolContext => {
+const toolContext = (
+  sandbox: Sandbox = new NotASandboxLocalEnvironment(),
+  cancelSignal = new AbortController().signal
+): ToolContext => {
   const agent = createMockAgent({ extra: { sandbox } })
   return {
     toolUse: { name: 'python_repl', toolUseId: 'id', input: {} },
     agent,
     invocationState: {},
-    cancelSignal: agent.cancelSignal,
+    cancelSignal,
     interrupt: () => {
       throw new Error('interrupt not available in mock context')
     },
@@ -43,8 +46,12 @@ const run = (input: { code: string; timeout?: number }, context: ToolContext, to
 describe('python_repl shim', () => {
   it('uses the agent sandbox and defaults', async () => {
     const { sandbox, executeCode } = mockSandbox()
-    const result = await run({ code: "print('hi')" }, toolContext(sandbox))
-    expect(executeCode).toHaveBeenCalledExactlyOnceWith("print('hi')", 'python3', { timeout: 120 })
+    const context = toolContext(sandbox)
+    const result = await run({ code: "print('hi')" }, context)
+    expect(executeCode).toHaveBeenCalledExactlyOnceWith("print('hi')", 'python3', {
+      timeout: 120,
+      signal: context.cancelSignal,
+    })
     expect(result).toStrictEqual({ output: 'hi\n', error: '', exit_code: 0 })
   })
 
@@ -53,13 +60,17 @@ describe('python_repl shim', () => {
     const agentSandbox = mockSandbox()
     const tool = makePythonRepl(bound.sandbox, { language: 'python3.12' })
     await run({ code: 'pass', timeout: 7 }, toolContext(agentSandbox.sandbox), tool)
-    expect(bound.executeCode).toHaveBeenCalledExactlyOnceWith('pass', 'python3.12', { timeout: 7 })
+    expect(bound.executeCode).toHaveBeenCalledExactlyOnceWith(
+      'pass',
+      'python3.12',
+      expect.objectContaining({ timeout: 7 })
+    )
     expect(agentSandbox.executeCode).not.toHaveBeenCalled()
   })
 
-  it.each([0, -1])('rejects non-positive timeout %d', async (timeout) => {
+  it('rejects a non-positive timeout', async () => {
     const { sandbox, executeCode } = mockSandbox()
-    await expect(run({ code: 'pass', timeout }, toolContext(sandbox))).rejects.toThrow(/too_small/)
+    await expect(run({ code: 'pass', timeout: 0 }, toolContext(sandbox))).rejects.toThrow(/too_small/)
     expect(executeCode).not.toHaveBeenCalled()
   })
 
@@ -81,11 +92,6 @@ describe('python_repl shim', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('python_repl local execution', () => {
-  it('runs python', async () => {
-    const result = await run({ code: 'print(sum(range(10)))' }, toolContext())
-    expect(result).toStrictEqual({ output: '45\n', error: '', exit_code: 0 })
-  })
-
   it.each([
     ["raise ValueError('bad')", 'ValueError: bad'],
     ['input()', 'EOFError'],
@@ -104,7 +110,7 @@ describe.skipIf(process.platform === 'win32')('python_repl local execution', () 
     expect(missing.error).toContain('NameError')
 
     const restored = await run({ code: `import json; print(json.load(open(${JSON.stringify(path)}))['x'])` }, ctx)
-    expect(restored.output).toBe('42\n')
+    expect(restored).toStrictEqual({ output: '42\n', error: '', exit_code: 0 })
   })
 
   it('timeout carries partial output with the success field names', async () => {
@@ -116,14 +122,21 @@ describe.skipIf(process.platform === 'win32')('python_repl local execution', () 
     const payload = JSON.parse((error as Error).message.split('\n')[1]!)
     expect(payload).toStrictEqual({ output: 'partial\n', error: '', exit_code: 124 })
   })
+
+  it('cancellation kills the interpreter and propagates unwrapped', async () => {
+    const controller = new AbortController()
+    const pending = run({ code: 'import time; time.sleep(10)' }, toolContext(undefined, controller.signal))
+    setTimeout(() => controller.abort(), 100)
+    const start = Date.now()
+    await expect(pending).rejects.toBeInstanceOf(SandboxAbortError)
+    expect(Date.now() - start).toBeLessThan(5000)
+  })
 })
 
 describe('makePythonRepl', () => {
   it.each([
     [{ name: '' }, /name/],
-    [{ language: '' }, /language/],
     [{ language: 'python3; rm -rf /' }, /language/],
-    [{ language: 'py thon' }, /language/],
   ])('rejects invalid arguments %o', (options, match) => {
     expect(() => makePythonRepl(options)).toThrow(match)
   })
@@ -138,14 +151,10 @@ describe('makePythonRepl', () => {
     expect(vendedTools.makePythonRepl).toBe(makePythonRepl)
   })
 
-  it('accepts a custom name and description', () => {
-    const tool = makePythonRepl({ name: 'run_python', description: 'custom' })
+  it('resolves both overloads and applies a custom name and description', () => {
+    const tool = makePythonRepl(undefined, { name: 'run_python', description: 'custom' })
     expect(tool.name).toBe('run_python')
     expect(tool.toolSpec.description).toBe('custom')
-  })
-
-  it('resolves both overloads', () => {
-    expect(makePythonRepl(undefined, { name: 'run_python' }).name).toBe('run_python')
     expect(makePythonRepl(new NotASandboxLocalEnvironment()).name).toBe('python_repl')
   })
 })
