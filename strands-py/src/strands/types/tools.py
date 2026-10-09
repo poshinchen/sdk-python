@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol
 from typing_extensions import NotRequired, TypedDict, TypeVar
 
 from .interrupt import _Interruptible
-from .media import DocumentContent, ImageContent
+from .media import DocumentContent, ImageContent, VideoContent
 
 if TYPE_CHECKING:
     from .agent import LocalAgent
@@ -93,12 +93,14 @@ class ToolResultContent(TypedDict, total=False):
         image: Image content returned by the tool.
         json: JSON-serializable data returned by the tool.
         text: Text content returned by the tool.
+        video: Video content returned by the tool.
     """
 
     document: DocumentContent
     image: ImageContent
     json: Any
     text: str
+    video: VideoContent
 
 
 ToolResultStatus = Literal["success", "error"]

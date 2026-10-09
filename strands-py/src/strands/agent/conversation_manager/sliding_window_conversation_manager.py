@@ -1,5 +1,6 @@
 """Sliding window conversation history management."""
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,45 @@ logger = logging.getLogger(__name__)
 _PRESERVE_CHARS = 200
 
 
+def _source_label(source: Any) -> str:
+    """Describe a media source as `source: bytes, N bytes` for inline data or `source: <location type>` otherwise."""
+    if "bytes" in source:
+        return f"source: bytes, {len(source['bytes'])} bytes"
+    return f"source: {source.get('location', {}).get('type', 'unknown')}"
+
+
+def _image_placeholder(image: Any) -> str:
+    return f"[image: {image.get('format', 'unknown')}, {_source_label(image.get('source', {}))}]"
+
+
+def _video_placeholder(video: Any) -> str:
+    return f"[video: {video.get('format', 'unknown')}, {_source_label(video.get('source', {}))}]"
+
+
+def _document_placeholder(document: Any) -> str:
+    name = document.get("name", "unknown")
+    doc_format = document.get("format", "unknown")
+    return f"[document: {name}, {doc_format}, {_source_label(document.get('source', {}))}]"
+
+
+def _replacement_placeholder(item: Any) -> str | None:
+    """Return a placeholder replacing a whole tool result item, or None if the item should not be replaced.
+
+    JSON is replaced only when large, since truncating mid-structure would produce invalid JSON.
+    """
+    if "image" in item:
+        return _image_placeholder(item["image"])
+    if "video" in item:
+        return _video_placeholder(item["video"])
+    if "document" in item:
+        return _document_placeholder(item["document"])
+    if "json" in item:
+        serialized_length = len(json.dumps(item["json"], default=str))
+        if serialized_length > 2 * _PRESERVE_CHARS:
+            return f"[json: {serialized_length} chars]"
+    return None
+
+
 class SlidingWindowConversationManager(ConversationManager):
     """Implements a sliding window strategy for managing conversation history.
 
@@ -26,7 +66,8 @@ class SlidingWindowConversationManager(ConversationManager):
     invalid window states.
 
     When truncation is enabled (the default), large tool results are partially truncated, preserving the first
-    and last 200 characters, and image blocks inside tool results are replaced with descriptive text placeholders.
+    and last 200 characters, and image, video, document, and large JSON blocks inside tool results are replaced
+    with descriptive text placeholders.
     Truncation targets the oldest tool results first so the most relevant recent context is preserved as long
     as possible.
 
@@ -299,14 +340,16 @@ class SlidingWindowConversationManager(ConversationManager):
         return None
 
     def _truncate_tool_results(self, messages: Messages, msg_idx: int) -> bool:
-        """Truncate tool results and replace image blocks in a message to reduce context size.
+        """Truncate tool results and replace media and oversized JSON blocks in a message to reduce context size.
 
         For text blocks within tool results, all blocks are partially truncated unless they
         have already been truncated. The first and last _PRESERVE_CHARS characters are kept,
         and the removed middle is replaced with a notice indicating how many characters were
         removed. The tool result status is not changed.
 
-        Image blocks nested inside tool result content are replaced with a short descriptive placeholder.
+        Image, video, and document blocks nested inside tool result content are replaced with a short
+        descriptive placeholder. JSON blocks are replaced with a placeholder when their serialized length
+        exceeds 2 * _PRESERVE_CHARS.
 
         Args:
             messages: The conversation message history.
@@ -317,12 +360,6 @@ class SlidingWindowConversationManager(ConversationManager):
         """
         if msg_idx >= len(messages) or msg_idx < 0:
             return False
-
-        def _image_placeholder(image_block: Any) -> str:
-            source: Any = image_block.get("source", {})
-            media_type = image_block.get("format", "unknown")
-            data = source.get("bytes", b"")
-            return f"[image: {media_type}, {len(data) if data else 0} bytes]"
 
         message = messages[msg_idx]
         changes_made = False
@@ -336,9 +373,9 @@ class SlidingWindowConversationManager(ConversationManager):
                 item_changed = False
 
                 for item in tool_result_items:
-                    # Replace image items nested inside toolResult content
-                    if "image" in item:
-                        new_items.append({"text": _image_placeholder(item["image"])})
+                    placeholder = _replacement_placeholder(item)
+                    if placeholder is not None:
+                        new_items.append({"text": placeholder})
                         item_changed = True
                         continue
 
