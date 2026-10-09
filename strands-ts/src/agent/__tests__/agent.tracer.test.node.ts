@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, type MockInstance } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 import { Agent } from '../agent.js'
 import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
@@ -13,6 +13,7 @@ import {
 import { AfterToolsEvent, BeforeToolsEvent } from '../../hooks/events.js'
 import { InvokeModelStage } from '../../middleware/stages.js'
 import { Tracer } from '../../telemetry/tracer.js'
+import { context as otelContext, propagation } from '@opentelemetry/api'
 import { z } from 'zod'
 
 interface MockTracerInstance {
@@ -90,6 +91,55 @@ describe('Agent tracer integration', () => {
       const agent = new Agent({ id: 'custom-id-123' })
 
       expect(agent.id).toBe('custom-id-123')
+    })
+  })
+
+  describe('session.id baggage', () => {
+    let withSpy: MockInstance
+
+    beforeEach(() => {
+      withSpy = vi.spyOn(otelContext, 'with')
+    })
+
+    afterEach(() => {
+      withSpy.mockRestore()
+    })
+
+    function findBaggageSessionId(spy: MockInstance): string | undefined {
+      for (const [ctx] of spy.mock.calls) {
+        const entry = propagation.getBaggage(ctx as import('@opentelemetry/api').Context)?.getEntry('session.id')
+        if (entry) return entry.value
+      }
+      return undefined
+    }
+
+    it('sets session.id from traceAttributes, falling back to sessionId', async () => {
+      // Explicit traceAttributes value wins
+      const m1 = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hi' })
+      const a1 = new Agent({ model: m1, traceAttributes: { 'session.id': 'custom-123' } })
+      await a1.invoke('Hi')
+      expect(findBaggageSessionId(withSpy)).toBe('custom-123')
+
+      withSpy.mockClear()
+
+      // Falls back to auto-generated sessionId when traceAttributes omits session.id
+      const m2 = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hi' })
+      const a2 = new Agent({ model: m2 })
+      await a2.invoke('Hi')
+      expect(findBaggageSessionId(withSpy)).toBe(a2.sessionId)
+    })
+
+    it('preserves existing session.id in ambient context (outer agent)', async () => {
+      const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Hi' })
+      const agent = new Agent({ model, traceAttributes: { 'session.id': 'inner-id' } })
+
+      // Simulate an outer agent's baggage already on the active context
+      const outerBag = propagation.createBaggage().setEntry('session.id', { value: 'outer-id' })
+      const outerCtx = propagation.setBaggage(otelContext.active(), outerBag)
+
+      await otelContext.with(outerCtx, () => agent.invoke('Hi'))
+
+      expect(findBaggageSessionId(withSpy)).toBe('outer-id')
     })
   })
 

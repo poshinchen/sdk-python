@@ -26,7 +26,15 @@
  * ```
  */
 
-import { context, isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, SpanKind, trace } from '@opentelemetry/api'
+import {
+  context,
+  isSpanContextValid,
+  propagation,
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  SpanKind,
+  trace,
+} from '@opentelemetry/api'
 import type { Span, Tracer as OtelTracer, SpanOptions, AttributeValue, Link, SpanContext } from '@opentelemetry/api'
 import { logger } from '../logging/index.js'
 import type {
@@ -982,11 +990,22 @@ export class Tracer {
     if (options.links) spanOptions.links = options.links
 
     // An empty root context detaches the span from any (possibly ended) current span.
-    const ctx = options.forceRoot
+    let ctx = options.forceRoot
       ? ROOT_CONTEXT
       : options.parentSpan
         ? trace.setSpan(context.active(), options.parentSpan)
         : context.active()
+
+    if (options.forceRoot) {
+      // Preserve baggage so invocation-scoped entries propagate to root spans.
+      try {
+        const bag = propagation.getBaggage(context.active())
+        if (bag) ctx = propagation.setBaggage(ctx, bag)
+      } catch {
+        // getBaggage can fail in mocked/no-op environments — fall through to ROOT_CONTEXT.
+      }
+    }
+
     const span = this._tracer.startSpan(options.name, spanOptions, ctx)
 
     try {

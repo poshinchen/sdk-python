@@ -102,7 +102,8 @@ import type { MemoryManagerConfig } from '../memory/index.js'
 import { SessionManager } from '../session/session-manager.js'
 import { Tracer } from '../telemetry/tracer.js'
 import { AgentMetrics, Meter } from '../telemetry/meter.js'
-import type { AttributeValue } from '@opentelemetry/api'
+import { context as otelContext, propagation } from '@opentelemetry/api'
+import type { AttributeValue, Context } from '@opentelemetry/api'
 import { logger } from '../logging/logger.js'
 import { CancelledError, CheckpointError } from '../errors.js'
 import { DefaultModelRetryStrategy } from '../retry/default-model-retry-strategy.js'
@@ -489,6 +490,8 @@ export class Agent implements LocalAgent, InvokableAgent {
   private _abortSignal: AbortSignal = this._abortController.signal
   private _printer?: Printer
   private _structuredOutputSchema?: z.ZodSchema | undefined
+  /** Custom trace attributes passed at construction. */
+  private readonly _traceAttributes?: Record<string, AttributeValue>
   /** Tracer instance for creating and managing OpenTelemetry spans. */
   private _tracer: Tracer
   /** Meter instance for accumulating loop metrics during invocation. */
@@ -645,6 +648,9 @@ export class Agent implements LocalAgent, InvokableAgent {
 
     // Store structured output schema
     this._structuredOutputSchema = config?.structuredOutputSchema
+
+    // Store trace attributes for baggage override
+    if (config?.traceAttributes) this._traceAttributes = config.traceAttributes
 
     // Initialize tracer - OTEL returns no-op tracer if not configured
     this._tracer = new Tracer(config?.traceAttributes)
@@ -1342,22 +1348,23 @@ export class Agent implements LocalAgent, InvokableAgent {
     options?: InvokeOptions,
     continuationEvent?: AfterInvocationEvent
   ): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
-    const streamGenerator = this._stream(args, options, continuationEvent)
+    const baggageCtx = this._getBaggageContext()
+    const streamGenerator = otelContext.with(baggageCtx, () => this._stream(args, options, continuationEvent))
     let caughtError: Error | undefined
     let iterationResult: IteratorResult<AgentStreamEvent, AgentResult>
     try {
-      iterationResult = await streamGenerator.next()
+      iterationResult = await otelContext.with(baggageCtx, () => streamGenerator.next())
 
       while (!iterationResult.done) {
         try {
           const processed = await this._invokeCallbacks(iterationResult.value)
           yield processed
-          iterationResult = await streamGenerator.next()
+          iterationResult = await otelContext.with(baggageCtx, () => streamGenerator.next())
         } catch (error) {
           // Throw interrupt errors back into _stream so executeTools can store the
           // assistant message as pending execution state for resume.
           if (error instanceof InterruptError) {
-            iterationResult = await streamGenerator.throw(error)
+            iterationResult = await otelContext.with(baggageCtx, () => streamGenerator.throw(error))
           } else {
             throw error
           }
@@ -1370,7 +1377,7 @@ export class Agent implements LocalAgent, InvokableAgent {
       // Drain _stream() so cleanup hooks and printer still fire.
       // Yield only on error (consumer may still be iterating); on a consumer
       // break, yielding would suspend the generator and leak the lock.
-      let drainResult = await streamGenerator.return(undefined as never)
+      let drainResult = await otelContext.with(baggageCtx, () => streamGenerator.return(undefined as never))
       while (!drainResult.done) {
         try {
           if (caughtError) {
@@ -1383,7 +1390,7 @@ export class Agent implements LocalAgent, InvokableAgent {
             `event_type=<${drainResult.value.type}>, error=<${error}> | error invoking callbacks during cleanup`
           )
         }
-        drainResult = await streamGenerator.next()
+        drainResult = await otelContext.with(baggageCtx, () => streamGenerator.next())
       }
 
       // Reset controller and signal for next iteration / invocation
@@ -1904,6 +1911,20 @@ export class Agent implements LocalAgent, InvokableAgent {
         this._toolRegistry.remove(STRUCTURED_OUTPUT_TOOL_NAME)
       }
     }
+  }
+
+  /**
+   * Create an OTel context with session.id set as baggage.
+   */
+  private _getBaggageContext(): Context {
+    const active = otelContext.active()
+    const existing = propagation.getBaggage(active)
+    if (existing?.getEntry('session.id')) return active
+
+    const sessionId = String(this._traceAttributes?.['session.id'] ?? this.sessionId)
+    let bag = existing ?? propagation.createBaggage()
+    bag = bag.setEntry('session.id', { value: sessionId })
+    return propagation.setBaggage(active, bag)
   }
 
   /**

@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { Span, SpanAttributeValue } from '@opentelemetry/api'
-import { SpanStatusCode, trace, context } from '@opentelemetry/api'
+import { SpanStatusCode, trace, context, propagation, ROOT_CONTEXT } from '@opentelemetry/api'
 import { Tracer } from '../tracer.js'
 import { Message, TextBlock, ToolResultBlock, ToolUseBlock, CachePointBlock } from '../../types/messages.js'
 import { MockSpan, eventAttr } from '../../__fixtures__/mock-span.js'
@@ -57,6 +57,28 @@ describe('Tracer', () => {
       new Tracer()
 
       expect(trace.getTracer).toHaveBeenCalledWith('strands-agents')
+    })
+  })
+
+  describe('forceRoot baggage preservation', () => {
+    afterEach(() => {
+      vi.mocked(context.active).mockReturnValue({} as any)
+    })
+
+    it('preserves baggage from active context on forceRoot spans', () => {
+      // Simulate an active context that already has session.id baggage
+      const bag = propagation.createBaggage().setEntry('session.id', { value: 'sess-99' })
+      const baggageCtx = propagation.setBaggage(ROOT_CONTEXT, bag)
+      vi.mocked(context.active).mockReturnValue(baggageCtx)
+
+      const tracer = new Tracer()
+      // startMultiAgentSpan uses forceRoot
+      tracer.startMultiAgentSpan({ orchestratorId: 'graph-1', orchestratorType: 'graph' })
+
+      const ctx = mockStartSpan.mock.calls[0]![2] as import('@opentelemetry/api').Context
+      const resultBag = propagation.getBaggage(ctx)
+      expect(resultBag).toBeDefined()
+      expect(resultBag!.getEntry('session.id')?.value).toBe('sess-99')
     })
   })
 
