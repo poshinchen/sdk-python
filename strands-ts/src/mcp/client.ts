@@ -1123,7 +1123,6 @@ export class McpClient {
 
   private async _ensureServerToolDefinitions(operation: TaskOperation): Promise<void> {
     if (this._serverToolsListed) return
-    this._serverToolsListed = true
     try {
       const result = await this._client.listTools(undefined, {
         timeout: remainingTime(operation.deadline, this._tasksConfig!.requestTimeoutMs),
@@ -1135,6 +1134,9 @@ export class McpClient {
       if (operation.signal.aborted) throw error
       logger.warn(`error=<${error}> | failed to list tools for legacy task support detection`)
     }
+    // Set only once the listing settles: an aborted fetch must stay retryable, and a concurrent
+    // first call must not skip the fetch while this one is still in flight.
+    this._serverToolsListed = true
   }
 
   private async _callLegacyTask(params: CallToolRequest['params'], operation: TaskOperation): Promise<CallToolResult> {
