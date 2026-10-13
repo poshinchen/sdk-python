@@ -254,10 +254,10 @@ export interface McpClientOptions extends RuntimeConfig {
   tasksConfig?: TasksConfig
 
   /**
-   * Callback for progress notifications during tool calls. Fires for every tool call this
-   * client runs, including calls an agent makes, not only direct `callTool` calls. The
-   * `total` and `message` fields may be absent when the server does not provide them. A
-   * per-call `progressCallback` takes precedence.
+   * Callback for progress notifications during tool calls, including calls an agent makes.
+   * Not delivered for calls the server runs as a task (`tasksConfig` with a task-capable
+   * server). The `total` and `message` fields may be absent when the server does not provide
+   * them. A per-call `progressCallback` takes precedence.
    */
   progressCallback?: McpProgressCallback
 
@@ -359,6 +359,7 @@ export class McpClient {
   /** Set only when the transport was built from `url`, so a retry can build a fresh one. */
   private _urlConfig: McpClientConfig | undefined
   private _connectAttempted = false
+  private _taskProgressWarned = false
   private _state: McpConnectionState
   private _client: TaskClient
   private _continueOnError: boolean
@@ -943,6 +944,7 @@ export class McpClient {
 
     // The upstream codec rejects extension result types before custom result schemas run.
     if (completeLegacyTask && this._supportsLegacyTask(params.name)) {
+      this._warnTaskProgressUnsupported(options)
       const outputSchema = compileToolOutputSchema(
         params.name,
         this._serverToolDefinitions.get(params.name)?.outputSchema
@@ -954,6 +956,7 @@ export class McpClient {
 
     if (operation && this._supportsTaskExtension()) {
       if (!this._taskRoutingUnavailable) {
+        this._warnTaskProgressUnsupported(options)
         return await this._invokeTaskTool(tool, params, operation, options.timeoutMs!)
       }
       if (!this._taskRoutingWarned) {
@@ -1277,6 +1280,15 @@ export class McpClient {
       }
       throw error
     }
+  }
+
+  /** Warns once when a progress callback is registered on a call that is routed as a task. */
+  private _warnTaskProgressUnsupported(options?: McpCallToolOptions): void {
+    if (this._taskProgressWarned || !(options?.progressCallback ?? this._progressCallback)) return
+    this._taskProgressWarned = true
+    logger.warn(
+      `client=<${this._clientName}> | progress callbacks are not delivered for tool calls the server runs as a task`
+    )
   }
 
   private _buildProgressHandler(options?: McpCallToolOptions): ((progress: McpProgress) => void) | undefined {

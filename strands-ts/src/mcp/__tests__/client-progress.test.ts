@@ -48,8 +48,9 @@ describe('McpClient progress over a real transport', () => {
 
   it('resetTimeoutOnProgress still resets the request timer when the user callback owns the onprogress slot', async () => {
     const progressUpdates: McpProgress[] = []
-    // requestTimeout under the per-step delay only survives through progress resets; pollTimeout
-    // leaves room for the whole call.
+    // The server never advertises tasks, so the call runs on the direct path. tasksConfig only
+    // supplies the timeout shape: a requestTimeout under the per-step delay that survives through
+    // progress resets, with pollTimeout leaving room for the whole call.
     const client = await connectToSlowServer({
       tasksConfig: { requestTimeout: 300, pollTimeout: 5_000 },
       progressCallback: (progress) => progressUpdates.push(progress),
