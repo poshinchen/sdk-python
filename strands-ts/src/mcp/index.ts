@@ -2,6 +2,8 @@ export {
   type McpClientOptions,
   type McpListOptions,
   type McpListToolsOptions,
+  type McpProgress,
+  type McpProgressCallback,
   type McpToolFilterCallback,
   type McpToolFilters,
   type McpToolMatcher,
